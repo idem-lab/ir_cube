@@ -4,36 +4,35 @@
 # load packages and functions
 source("R/packages.R")
 source("R/functions.R")
+source("R/validation_functions.R")
 
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
 mask <- rast("data/clean/raster_mask.tif")
 
-# get posterior predictive simulations of observations
-died_sim <- betabinomial_p_rho(N = df$mosquito_number,
-                               p = population_mortality_vec,
-                               rho = rho_classes[df$class_id])
-mortality_sim <- died_sim / df$mosquito_number
+# draw the posterior predictive distribution at each observation. The
+# predicted fraction and the overdispersion are drawn in one call so that each
+# pair comes from the same posterior sample
+rho_observations <- rho_classes[df$class_id]
+sims <- calculate(population_mortality_vec,
+                  rho_observations,
+                  values = draws,
+                  nsim = 1e3)
 
-# summarise fit to data
-died <- calculate(died_sim, values = draws, nsim = 1e4)[[1]][, , 1]
+# randomised quantile residuals, computed from the analytic beta-binomial
+# mixture rather than by simulation, so the residuals carry no Monte Carlo
+# noise and the out-of-sample residuals in validation_metrics.R are computed
+# the same way (#10)
+ppd <- ppd_summary(df$died,
+                   df$mosquito_number,
+                   sims$population_mortality_vec[, , 1],
+                   sims$rho_observations[, , 1])
 
-# create a dharma object to compute randomised quantile residuals and
-# corresponding residual z scores
-dharma <- DHARMa::createDHARMa(
-  simulatedResponse = t(died),
-  observedResponse = df$died,
-  integerResponse = TRUE
-)
-
-# extract RQR, scaled to normal distribution for easier checking
+# scale to a normal distribution for easier checking
 df_validate <- df %>%
   mutate(
-    z_resid = qnorm(dharma$scaledResiduals),
-    # handle some Infs
-    z_resid = pmin(z_resid, max(z_resid[is.finite(z_resid)])),
-    z_resid = pmax(z_resid, min(z_resid[is.finite(z_resid)])),
+    z_resid = pit_to_z(rowMeans(ppd_pit(ppd, n_rep = 100))),
   ) %>%
   # add on covariate values
   left_join(
