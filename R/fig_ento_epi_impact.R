@@ -39,7 +39,7 @@ source("R/functions.R")
 years_plot <- 2000:2030
 
 # load admin borders for plotting
-borders <- readRDS("data/clean/gadm_polys.RDS")
+borders <- readRDS("data/clean/country_borders.RDS")
 
 # load mask with limits of transmission and water bodies for plotting
 pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")

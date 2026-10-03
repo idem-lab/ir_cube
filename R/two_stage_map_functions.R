@@ -1,54 +1,33 @@
 # Helpers for running the dynamical model on the full prediction grid, for the
-# two-stage maps (R/two_stage_maps.R) and the supplement figures
-# (R/fig_two_stage_components.R). The recursion and the initial conditions are
-# those of R/dynamical_predictions.R; this adds only the grid's covariates and
-# the country -> region lookup for countries without data. Functions only:
-# source from the repo root after R/dynamical_predictions.R.
+# two-stage maps (R/two_stage_maps.R), R/predict.R and the figure scripts. The
+# recursion and the parameters are those of R/dynamical_predictions.R; this
+# adds the grid's covariates and the initial states of countries without data.
+# Functions only: source from the repo root after R/dynamical_predictions.R.
 
-# All covariates the dynamical model uses, at the cells `cells` of the mask and
-# for the years baseline_year..end_year, built the way predict.R builds
-# x_cell_years_predict: the cubes are padded back to the baseline year and
-# forward to end_year by repeating their first and last layers. Returned as a
-# cells x years x 3 array of the time-varying covariates (nets, irs, pop) and a
-# cells x 10 matrix of the static crop covariates, rather than predict.R's long
-# (cell, year) matrix (5.5 GB for the 1.48M cells and 36 years); map_x()
-# assembles a chunk of cells in the column order of x_cell_years
-map_covariates <- function(cells, baseline_year = 1995, end_year = 2030) {
-
-  read_cube <- function(file) {
-    cube <- rast(file)
-    cube <- pre_pad_cube(cube, baseline_year)
-    cube <- post_pad_cube(cube, end_year)
-    years <- as.numeric(str_sub(names(cube), start = -4L))
-    cube <- cube[[years >= baseline_year & years <= end_year]]
-    stopifnot(identical(as.numeric(str_sub(names(cube), start = -4L)),
-                        as.numeric(baseline_year:end_year)))
-    as.matrix(terra::extract(cube, cells))
-  }
-
-  nets <- read_cube("data/clean/net_use_cube.tif")
-  time_varying <- array(NA_real_, c(length(cells), ncol(nets), 3),
-                        dimnames = list(NULL, baseline_year:end_year,
-                                        c("nets", "irs", "pop")))
-  time_varying[, , 1] <- nets
-  rm(nets)
-  time_varying[, , 2] <- read_cube("data/clean/irs_coverage_scaled_cube.tif")
-  time_varying[, , 3] <- read_cube("data/clean/pop_scaled_cube.tif")
-
-  crops_group <- rast("data/clean/crop_group_scaled.tif")
-  crops_all <- rast("data/clean/crop_scaled.tif")
-  flat <- as.matrix(terra::extract(c(crops_group, crops_all$cotton,
-                                     crops_all$vegetables, crops_all$rice),
-                                   cells))
-
-  list(time_varying = time_varying, flat = flat)
+# All covariates the dynamical model uses, at mask cells `cells` for the years
+# baseline_year..end_year, for the fit's selection design `design`
+# (options$selection_columns; R/model_covariates.R):
+#   time_varying  cells x years x n, the time-varying columns, in the column
+#                 order of x_cell_years (selection_time_varying())
+#   flat          cells x n_flat, the static crop columns (selection_static())
+#   init          cells x 2, the initial-state covariates
+# rather than a long (cell, year) matrix (5.5 GB for the 1.48M cells and 36
+# years); map_x() assembles a chunk of cells in the column order of
+# x_cell_years
+map_covariates <- function(cells, baseline_year = 1995, end_year = 2030,
+                           design = selection_design()) {
+  list(time_varying = selection_time_varying(cells, baseline_year, end_year,
+                                             design),
+       flat = selection_static(cells, design),
+       init = init_covariate_matrix(cells, design))
 }
 
 # The covariates of rows `rows` of map_covariates() for its first n_years
 # years, as the cells x years x n_covs array dynamical_logit_cells() takes
 map_x <- function(covariates, rows, n_years) {
   flat <- covariates$flat[rows, , drop = FALSE]
-  x <- array(NA_real_, c(length(rows), n_years, 3 + ncol(flat)))
+  n_time_varying <- dim(covariates$time_varying)[3]
+  x <- array(NA_real_, c(length(rows), n_years, n_time_varying + ncol(flat)))
   for (t in seq_len(n_years)) {
     x[, t, ] <- cbind(matrix(covariates$time_varying[rows, t, ],
                              nrow = length(rows)), flat)
@@ -56,12 +35,16 @@ map_x <- function(covariates, rows, n_years) {
   x
 }
 
-# Draws of logit q_0 for every African country in the UNSD lookup, not only
-# those with data (dynamical_logit_init(): fresh deviations for countries and
-# regions without data, with the caller's RNG), as a draws x countries x types
-# array with the country names as dimnames[[2]]. The region of a country is
-# the UNSD one, as in predict.R; the fit took each country's region from its
-# first record, and the two must agree for every country with data
+# Draws of the logit relative initial state (as
+# parameters$logit_init_relative, see dynamical_parameter_draws()) for every
+# African country in the UNSD lookup, not only those with data, as a
+# draws x countries x types array with the country names as dimnames[[2]].
+# Countries and regions without data get fresh N(0, 1) raw deviations (the
+# hierarchical model's prediction for a new one), one per posterior draw and
+# type, drawn with the caller's RNG and shared by every cell of the country;
+# the transform is the model's own, dynamical_terms(). The region of a country
+# is the UNSD one, as in predict.R; the fit took each country's region from
+# its first record, and the two must agree for every country with data
 map_logit_init <- function(parameters, countries, regions, df,
                            lookup = country_region_lookup()) {
   all_countries <- unique(lookup$country_name)
@@ -74,10 +57,39 @@ map_logit_init <- function(parameters, countries, regions, df,
             identical(regions[fit_region$region_id],
                       unsd_region[match(countries, all_countries)]))
 
+  v <- parameters$variables
+  n_draws <- parameters$n_draws
+  n_types <- length(parameters$types)
+  stopifnot(dim(v$init_region_raw)[2] == length(regions))
+  fresh <- function(n) array(rnorm(n_draws * n * n_types),
+                             c(n_draws, n, n_types))
+
+  country <- match(all_countries, countries)
+  country_raw <- v$init_country_raw[, pmax(country, 1, na.rm = TRUE), ,
+                                    drop = FALSE]
+  new_countries <- which(is.na(country))
+  country_raw[, new_countries, ] <- fresh(length(new_countries))
   new_regions <- setdiff(unique(unsd_region), regions)
-  region <- match(unsd_region, c(regions, new_regions))
-  logit_init <- dynamical_logit_init(parameters,
-                                     match(all_countries, countries), region)
-  dimnames(logit_init) <- list(NULL, all_countries, NULL)
+  region_raw <- array(NA_real_, c(n_draws, length(regions) +
+                                    length(new_regions), n_types))
+  region_raw[, seq_along(regions), ] <- v$init_region_raw
+  region_raw[, length(regions) + seq_along(new_regions), ] <-
+    fresh(length(new_regions))
+  v$init_country_raw <- country_raw
+  v$init_region_raw <- region_raw
+
+  logit_init <- dynamical_terms_draws(
+    v, parameters$classes_index,
+    country_region_index = match(unsd_region, c(regions, new_regions)),
+    types = parameters$types, terms = "logit_init_relative",
+    options = parameters$options)[[1]]
+  dimnames(logit_init) <- list(NULL, all_countries, parameters$types)
   logit_init
+}
+
+# column standard deviations of a matrix, e.g. over the draws
+col_sds <- function(x) {
+  n <- nrow(x)
+  mu <- colMeans(x)
+  sqrt(pmax(colSums(x ^ 2) - n * mu ^ 2, 0) / (n - 1))
 }

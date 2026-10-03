@@ -20,14 +20,11 @@ if (!exists("plot_folds")) {
 # load packages and functions
 source("R/packages.R")
 source("R/functions.R")
+source("R/bioassay_subset.R")
 
 # load bioassay data
 ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
-
-# Note: there is code in fit_model to subset this to some insecticides. Relevant
-# code is copied here for now, but move that into the data preparation scripts
-# and save only the model-ready version to load in here
 
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
@@ -35,62 +32,14 @@ mask <- rast("data/clean/raster_mask.tif")
 baseline_year <- 1995
 final_data_year <- 2024
 
-insecticides_keep <- c("Alpha-cypermethrin",
-                       "Deltamethrin",
-                       "Lambda-cyhalothrin", 
-                       "Permethrin",
-                       "Fenitrothion",
-                       "Malathion",
-                       "Pirimiphos-methyl",
-                       "DDT",
-                       "Bendiocarb")
-
-df <- ir_africa %>%
-  filter(
-    insecticide_type %in% insecticides_keep
-  ) %>%
-  group_by(
-    insecticide_type
-  ) %>%
-  # subset to the most common concentration for each insecticide
-  filter(
-    concentration == sample_mode(concentration)
-  ) %>%
-  ungroup() %>%
-  filter(
-    # drop any from before the baseline
-    year_start >= baseline_year,
-    year_start <= final_data_year
-  ) %>%
-  mutate(
-    # need year id for main dynamical model
-    year_id = year_start - baseline_year + 1,
-    # add on cell ids corresponding to these observations,
-    cell = cellFromXY(mask,
-                      as.matrix(select(., longitude, latitude)))
-  ) %>%
-  # drop a handful of datapoints missing covariates
-  filter(
-    !is.na(extract(mask, cell)[, 1])
-  )
+# the modelled subset, as in fit_model.R (R/bioassay_subset.R)
+df <- subset_modelled_bioassays(ir_africa, mask, baseline_year = baseline_year,
+                                final_data_year = final_data_year)
 
 
-# indexing for main model fitting
-classes <- unique(df$insecticide_class)
-types <- unique(df$insecticide_type)
-regions <- unique(df$region)
-countries <- unique(df$country_name)
-unique_cells <- unique(df$cell)
+# indexing for main model fitting (R/bioassay_subset.R)
+list2env(index_bioassays(df), environment())
 years <- baseline_year - 1 + sort(unique(df$year_id))
-
-df <- df %>%
-  mutate(
-    cell_id = match(cell, unique_cells),
-    region_id = match(region, regions),
-    country_id = match(country_name, countries),
-    class_id = match(insecticide_class, classes),
-    type_id = match(insecticide_type, types)
-  )
 
 # Define the training and test folds for: spatial extrapolation (country
 # dropout), spatial interpolation (multi-area dropout), and temporal forecasting
@@ -290,10 +239,7 @@ if (plot_folds) {
 
 }
 
-# `fold` already encodes the test year cutoff, so this is just the two sides of
-# that column. It used to go through a general split_data() helper, whose other
-# modes - a name prefix match across several columns, exclusion rather than
-# selection, and a minimum year - had no remaining caller (#12 review)
+# `fold` already encodes the test year cutoff
 spatial_interpolation <- list(
   training = df_interp %>%
     filter(fold == "training"),
@@ -328,16 +274,10 @@ final_year <- min(nets_final_year, irs_final_year, pop_final_year)
 
 # Build one forecasting fold from a cut year and a window length.
 #
-# `training` must be `year_start < cut_year`, not "not in the test years". The
-# data run to 2024 while the covariates stop in 2022, so excluding only the
-# three test years left 888 records from 2023 and 2024 in the training set: the
-# model was fitted on both sides of the window it was asked to forecast, which
-# is temporal interpolation with both endpoints pinned. A quarter of the
-# held-out records were at cells that also carried post-horizon training data.
-# The leak was asymmetric, because the nearest neighbour null masks on
-# `year + (0, -1, -2, -3)` and so could never see them, and it therefore
-# favoured the dynamical model. Inherited from the original design, so
-# results from before this fix are affected (#12 review).
+# `training` must be `year_start < cut_year`, not "not in the test years": the
+# data run past the test window, and records after it in the training set make
+# the forecast an interpolation, which favoured the dynamical model over the
+# nearest neighbour null (#12 review).
 #
 # `before` is the window of equal length immediately before the cut. The
 # forecasting experiment is scored on the change in mortality between that
@@ -345,9 +285,8 @@ final_year <- min(nets_final_year, irs_final_year, pop_final_year)
 # the local slope — otherwise the test is largely spatial, since most held-out
 # site-years have training data a few years earlier (#12 review 5.1). Those
 # records are part of the training set; they are named here so the model's
-# predictions at them can be requested at fitting time, which is the only time
-# they can be: `extra_samples()` cannot resume a saved `draws` object, so every
-# prediction target must be asked for up front.
+# predictions at them can be requested at fitting time, the only time they can
+# be.
 forecasting_fold <- function(cut_year, window, data = df) {
 
   test_years <- cut_year + seq_len(window) - 1

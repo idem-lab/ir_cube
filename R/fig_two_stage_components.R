@@ -146,13 +146,15 @@ n_pix <- nrow(pixels)
 n_years_all <- length(years_all)
 
 # dynamical logit at the pixels, as a years x pixels x draws array
-covariates <- map_covariates(pixels$cell, baseline_year, end_year)
-pixel_country <- match(pixels$country, colnames(dynamical$logit_init))
+covariates <- map_covariates(pixels$cell, baseline_year, end_year,
+                             dynamical$parameters$options$selection_columns)
+pixel_country <- match(pixels$country, dimnames(dynamical$logit_init)[[2]])
 stopifnot(!anyNA(pixel_country))
-m <- dynamical_logit_cells(dynamical$effect,
-                           dynamical$logit_init[, pixel_country, drop = FALSE],
+m <- dynamical_logit_cells(dynamical$parameters, k,
+                           matrix(dynamical$logit_init[, pixel_country, k],
+                                  n_draws),
                            map_x(covariates, seq_len(n_pix), n_years_all),
-                           seq_len(n_years_all))
+                           seq_len(n_years_all), x_init = covariates$init)
 m <- aperm(simplify2array(m), c(3, 2, 1))
 
 # check: at the sampled pixels' data years, the same draws as at the assays

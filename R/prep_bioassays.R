@@ -1023,6 +1023,158 @@ ir_distinct_gambiae <- ir_distinct %>% filter(species_complex == "gambiae comple
 ir_distinct_gambiae <- ir_distinct_gambiae %>% 
   select(-c(lat_round:mortality_round))
 
+# check the country labels against the coordinates. The model takes each
+# pixel's country (and so its initial condition) from this label, so the label
+# and the pixel have to agree. See issue #13. Three rules, in order:
+#
+# 1. A record at rounded coordinates that falls outside its labelled country,
+# but whose rounding box (the area the rounding implies) overlaps that country,
+# is moved into it: to the pixel of the labelled country nearest the recorded
+# point within the box, or failing that the nearest pixel of that country
+# anywhere. Its coordinates become that pixel's centre, so the model puts it
+# there. "Rounded" is at most one decimal place in both coordinates, a box of
+# +/- 0.5 or 0.05 degrees. In practice only whole degrees trigger it: 76 records
+# (6 locations) are at whole degrees and 256 at one decimal place, and the only
+# rounded records outside their country are 47 in Rwanda at (29, -2), (29, -3)
+# and (30, -1), 16-36 km into DR Congo and Uganda. Two decimals is +/- 0.5 km,
+# well inside the tolerance of rule 2.
+#
+# 2. Otherwise a label is kept if the point is within country_tolerance_km of
+# the labelled country, and else relabelled to the country it lies in. Of the
+# 148 other records in a neighbouring country's polygon, 139 are within 3.5 km
+# of their labelled country's border (GADM generalisation and coordinate
+# rounding) and 9 are at 7.8 km or more, with nothing in between.
+#
+# 3. Records outside every polygon take their nearest country if within the
+# tolerance (106 of 126, all within 4 km of their label) and are dropped
+# otherwise (20 records 40 km offshore of Madagascar, outside the mask).
+#
+# Records labelled with a country that has no mask cells, and so no border
+# polygon (8 in Cabo Verde), are left alone.
+country_tolerance_km <- 5
+country_borders <- readRDS("data/clean/country_borders.RDS")
+country_raster <- rast("data/clean/country_raster.tif")
+
+record_points <- ir_distinct_gambiae %>%
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = st_crs(country_borders))
+polygon_index <- st_intersects(record_points, country_borders) %>%
+  vapply(function(i) i[1], integer(1))
+nearest_index <- st_nearest_feature(record_points, country_borders)
+label_index <- match(ir_distinct_gambiae$country_name,
+                     country_borders$country_name)
+km_from_label <- as.numeric(st_distance(record_points,
+                                        country_borders[label_index, ],
+                                        by_element = TRUE)) / 1000
+km_from_nearest <- as.numeric(st_distance(record_points,
+                                          country_borders[nearest_index, ],
+                                          by_element = TRUE)) / 1000
+country_geometry <- country_borders$country_name[
+  ifelse(is.na(polygon_index), nearest_index, polygon_index)]
+
+# half-width of the rounding box in degrees, from the number of decimal places
+# of the less precise coordinate; NA if more than one decimal place
+decimal_places <- function(x) {
+  places <- rep(NA_integer_, length(x))
+  for (d in 1:0) {
+    places[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-6] <- d
+  }
+  places
+}
+rounding_places <- pmin(decimal_places(ir_distinct_gambiae$longitude),
+                        decimal_places(ir_distinct_gambiae$latitude))
+box_half_width <- 0.5 * 10 ^ -rounding_places
+
+box_overlaps_label <- rep(FALSE, nrow(ir_distinct_gambiae))
+candidates <- which(!is.na(box_half_width) & !is.na(label_index) &
+                      km_from_label > 0)
+for (i in candidates) {
+  box <- st_as_sfc(st_bbox(c(
+    xmin = ir_distinct_gambiae$longitude[i] - box_half_width[i],
+    xmax = ir_distinct_gambiae$longitude[i] + box_half_width[i],
+    ymin = ir_distinct_gambiae$latitude[i] - box_half_width[i],
+    ymax = ir_distinct_gambiae$latitude[i] + box_half_width[i]),
+    crs = st_crs(country_borders)))
+  box_overlaps_label[i] <- lengths(st_intersects(
+    box, country_borders[label_index[i], ])) > 0
+}
+
+# the pixel of the labelled country to move each rounded record to, per
+# location
+country_cells <- data.frame(cell = cells(country_raster)) %>%
+  mutate(country_name = as.character(
+           terra::extract(country_raster, cell)$country_name)) %>%
+  bind_cols(as.data.frame(xyFromCell(country_raster, .$cell)))
+move_to <- ir_distinct_gambiae %>%
+  mutate(half_width = box_half_width) %>%
+  filter(box_overlaps_label) %>%
+  distinct(longitude, latitude, country_name, half_width)
+move_to$new_longitude <- NA_real_
+move_to$new_latitude <- NA_real_
+move_to$within_box <- NA
+for (j in seq_len(nrow(move_to))) {
+  options <- country_cells %>%
+    filter(country_name == move_to$country_name[j])
+  in_box <- abs(options$x - move_to$longitude[j]) <= move_to$half_width[j] &
+    abs(options$y - move_to$latitude[j]) <= move_to$half_width[j]
+  move_to$within_box[j] <- any(in_box)
+  if (any(in_box)) {
+    options <- options[in_box, ]
+  }
+  km <- as.numeric(st_distance(
+    st_as_sf(move_to[j, ], coords = c("longitude", "latitude"),
+             crs = st_crs(country_borders)),
+    st_as_sf(options, coords = c("x", "y"),
+             crs = st_crs(country_borders)))) / 1000
+  move_to$new_longitude[j] <- options$x[which.min(km)]
+  move_to$new_latitude[j] <- options$y[which.min(km)]
+}
+move_index <- match(paste(ir_distinct_gambiae$longitude,
+                          ir_distinct_gambiae$latitude,
+                          ir_distinct_gambiae$country_name),
+                    paste(move_to$longitude, move_to$latitude,
+                          move_to$country_name))
+move_index[!box_overlaps_label] <- NA
+
+country_check <- tibble(
+  country_label = ir_distinct_gambiae$country_name,
+  country_geometry = country_geometry,
+  km_from_label = km_from_label,
+  km_outside_polygons = ifelse(is.na(polygon_index), km_from_nearest, 0),
+  new_longitude = move_to$new_longitude[move_index],
+  new_latitude = move_to$new_latitude[move_index],
+  new_pixel_within_box = move_to$within_box[move_index],
+  action = case_when(
+    is.na(label_index) ~ "keep",
+    box_overlaps_label ~ "move",
+    km_from_label <= country_tolerance_km ~ "keep",
+    km_outside_polygons <= country_tolerance_km ~ "relabel",
+    .default = "drop"
+  )
+)
+
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+ir_distinct_gambiae %>%
+  select(longitude, latitude, year_start, insecticide_type, source, citation) %>%
+  bind_cols(country_check) %>%
+  filter(action != "keep") %>%
+  write.csv("outputs/review/bioassay_country_relabels.csv", row.names = FALSE)
+print(count(country_check, action, country_label, country_geometry))
+
+ir_distinct_gambiae <- ir_distinct_gambiae %>%
+  mutate(
+    country_name = if_else(country_check$action == "relabel",
+                           country_check$country_geometry,
+                           country_name),
+    longitude = if_else(country_check$action == "move",
+                        country_check$new_longitude,
+                        longitude),
+    latitude = if_else(country_check$action == "move",
+                       country_check$new_latitude,
+                       latitude)
+  ) %>%
+  filter(country_check$action != "drop")
+
 # add on region information
 ir_distinct_gambiae <- ir_distinct_gambiae %>%
   left_join(

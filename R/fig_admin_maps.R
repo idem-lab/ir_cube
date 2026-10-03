@@ -5,7 +5,7 @@ source("R/packages.R")
 source("R/functions.R")
 
 # make the colours and order match the main reigon figure
-gadm_polys <- readRDS("data/clean/gadm_polys.RDS") %>%
+country_borders <- readRDS("data/clean/country_borders.RDS") %>%
   mutate(
     region = factor(region,
                     levels = c(
@@ -22,7 +22,7 @@ region_map <- ggplot() +
     aes(
       fill = region
     ),
-    data = gadm_polys,
+    data = country_borders,
     col = "black"
   ) +
   scale_fill_brewer(

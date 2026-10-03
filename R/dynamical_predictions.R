@@ -1,60 +1,74 @@
 # Recompute the dynamical model's predictions, as logit draws, at arbitrary
 # cell-years from its saved posterior draws, in plain R.
 #
-# fit_fold() (R/fit_validation_fold.R) only asked greta for predictions at the
-# held-out assays, and a saved draws object cannot be resumed to ask for more.
-# The two-stage model needs them at the training assays too, paired draw for
-# draw with the stored test predictions, and on the map grid, so this
-# recomputes them from the sampled parameters:
+# A saved draws object cannot be resumed to ask greta for more predictions, so
+# the two-stage model (paired draw for draw with a fold's stored test
+# predictions), R/predict.R and the figure scripts recompute them from the
+# sampled parameters, with the model's own transforms (dynamical_terms() in
+# R/dynamical_model.R) and its options (fold$options). The recursion is
+# solved in closed form on the logit scale, as in closed_form_states():
 #
-#   in the draws (constrained values of the arrays passed to model()):
-#     beta_overall, sigma_overall, sigma_class   n_covs
-#     beta_class_raw                             n_covs x n_classes
-#     beta_type_raw                              n_covs x n_types
-#     init_region_sd, init_country_sd            n_types
-#     init_region_raw                            n_regions x n_types
-#     init_country_raw                           n_countries x n_types
-#   in the raw free-state draws only: logit_init_mean (n_types), which was not
-#   passed to model() (see logit_init_mean_draws()).
+#   logit q_t = logit q_0 - sum_{s <= t} log w_s - t kappa
 #
-# The recursion is solved in closed form on the logit scale. With
-# q_{t+1} = q_t / (q_t + (1 - q_t) w_t), the odds of being susceptible are
-# divided by w_t each year, so
-#
-#   logit q_t = logit q_0 - sum_{s <= t} log w_s
-#
-# exactly. greta.dynamics stores the state after each iteration and uses the
-# fitness for iteration i at time slice i, so the state recorded for year index
-# t has had the fitness of years 1..t applied. The state limits are the
-# defaults (-Inf, Inf) and tol = 0 can never be met, so there is no clamping
-# and no early stop to reproduce.
-#
-# Functions:
-#   paired_draw_index(fold)                     draws paired with fold$p_draws
-#   dynamical_parameter_draws(fold, classes_index, types, draw_index)
-#   dynamical_logit_init(parameters, country, region)
-#                                               logit q_0 per country, fresh
-#                                               deviations for countries and
-#                                               regions without data
-#   dynamical_logit_cells(effect, logit_init, x, years_keep)
-#                                               the recursion, for one type
-#   dynamical_logit(parameters, rows, df, x_cell_years, cell_years_index)
-#                                               at (cell, type, year) rows
+# the state for year index t having had the fitness of years 1..t applied.
+# The logit draws are of predicted mortality: q_t, or with a mortality floor
+# f, f + (1 - f) q_t.
+
+source("R/dynamical_model.R")
+# thin_draws() and max_draws
+source("R/validation_scoring.R")
 
 # Draw indices into as.matrix(fold$draws) that the stored predictions
 # correspond to: newer folds thin p_draws to `maximum` at fitting time with
 # this rule, older folds are thinned by the same rule at scoring time. The
-# rule is thin_draws() (R/validation_scoring.R, sourced by
-# R/two_stage_helpers.R)
+# rule is thin_draws() (R/validation_scoring.R). Chains recorded as stuck
+# (fold$stuck_chains, set by R/drop_stuck_chains.R, which drops their rows
+# from the stored predictions) are left out.
 paired_draw_index <- function(fold, maximum = max_draws) {
   n_total <- sum(vapply(fold$draws, nrow, integer(1)))
-  thin_draws(matrix(seq_len(n_total)), maximum)[, 1]
+  index <- thin_draws(matrix(seq_len(n_total)), maximum)[, 1]
+  if (length(fold$stuck_chains) > 0) {
+    index <- index[!draw_chain(fold$draws)[index] %in% fold$stuck_chains]
+  }
+  index
+}
+
+# The chain of each row of as.matrix(draws).
+draw_chain <- function(draws) {
+  rep(seq_along(draws), vapply(draws, nrow, integer(1)))
+}
+
+# The chains of `draws` that stopped moving: those whose share of distinct
+# draws is below `min_distinct`. With one step size for all chains
+# (windowed_hmc()), a chain can sit where every trajectory at that step size
+# fails, and then repeats one draw: in the October 2026 run, one chain of
+# spatial blocks fold 1 kept a single draw for all 3,000 samples.
+stuck_chains <- function(draws, min_distinct = 0.5) {
+  which(vapply(draws, function(chain) {
+    chain <- as.matrix(chain)
+    nrow(unique(chain)) / nrow(chain) < min_distinct
+  }, logical(1)))
+}
+
+# `draws` (a greta_mcmc_list) with only the chains `keep`, in the raw
+# free-state draws that calculate() reads as well.
+drop_chains <- function(draws, keep) {
+  out <- draws[keep]
+  model_info <- attr(draws, "model_info")
+  model_info$raw_draws <- model_info$raw_draws[keep]
+  attr(out, "model_info") <- model_info
+  class(out) <- class(draws)
+  out
 }
 
 # One named parameter of a draws x parameter matrix, as a draws x
 # dim(parameter) array. greta names elements by their R (column-major) index,
 # e.g. "beta_type_raw[13,9]", so the index is parsed from the names
 extract_parameter <- function(draws_matrix, name) {
+  # a scalar has one column, named without an index
+  if (name %in% colnames(draws_matrix)) {
+    return(draws_matrix[, name, drop = FALSE])
+  }
   columns <- grep(paste0("^", name, "\\["), colnames(draws_matrix))
   stopifnot(length(columns) > 0)
   index <- colnames(draws_matrix)[columns] %>%
@@ -73,148 +87,188 @@ extract_parameter <- function(draws_matrix, name) {
   out
 }
 
-# logit_init_mean has no named columns in the draws, but greta still samples
-# it, so its values are in the raw free-state draws,
-# attr(draws, "model_info")$raw_draws, which concatenate every variable's free
-# state in the dag's variable order. Its block is the one variable node that is
-# not among the model's named targets. An untruncated normal has an identity
-# free-state transform, so its raw value is its value; that is checked here on
-# beta_overall, the same kind of variable
-logit_init_mean_draws <- function(fold, draw_index = paired_draw_index(fold)) {
-  model_info <- attr(fold$draws, "model_info")
-  dag <- model_info$model$dag
-  free <- dag$example_parameters(free = TRUE)
-  sizes <- vapply(free, length, integer(1))
-  ends <- cumsum(sizes)
-  columns_of <- function(tf_name) {
-    i <- match(tf_name, names(free))
-    (ends[i] - sizes[i] + 1):ends[i]
-  }
-
+# The columns of each variable's free state in the raw draws of greta model
+# `model`, which concatenate them in the dag's variable order, named by the
+# variables' TensorFlow names; attribute "targets" maps the model's target
+# names to those names.
+free_state_columns <- function(model) {
+  dag <- model$dag
+  sizes <- vapply(dag$example_parameters(free = TRUE), length, integer(1))
+  columns <- Map(function(end, size) (end - size + 1):end, cumsum(sizes),
+                 sizes)
   node_names <- vapply(dag$node_list, function(node) node$unique_name,
                        character(1))
-  tf_names <- dag$get_tf_names()
-  target_nodes <- vapply(model_info$model$target_greta_arrays,
-                         function(x) greta:::get_node(x)$unique_name,
-                         character(1))
-  target_tf <- tf_names[match(target_nodes, node_names)]
-  names(target_tf) <- names(target_nodes)
-  untargeted <- setdiff(names(free), target_tf)
-  stopifnot(length(untargeted) == 1)
-
-  raw <- do.call(rbind, lapply(model_info$raw_draws, as.matrix))
-  raw <- raw[draw_index, , drop = FALSE]
-  stopifnot(ncol(raw) == sum(sizes))
-
-  named <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
-  beta_overall_named <- named[, grep("^beta_overall\\[", colnames(named)),
-                              drop = FALSE]
-  stopifnot(isTRUE(all.equal(unname(raw[, columns_of(target_tf["beta_overall"]),
-                                        drop = FALSE]),
-                             unname(beta_overall_named))))
-
-  raw[, columns_of(untargeted), drop = FALSE]
+  targets <- vapply(model$target_greta_arrays,
+                    function(x) greta:::get_node(x)$unique_name,
+                    character(1))
+  attr(columns, "targets") <- setNames(
+    dag$get_tf_names()[match(targets, node_names)], names(targets))
+  columns
 }
 
-# The parameter draws the predictions need, for the draws in `draw_index`:
-#   effect_type   draws x n_covs x n_types, exp(beta_type)
-#   init_*        the initial-condition components, combined by
-#                 dynamical_logit_init()
+# dynamical_terms() for every draw of the variables `v` (a named list of
+# draws x dim arrays), stacked as draws x dim(term) arrays, for the terms
+# `terms`.
+dynamical_terms_draws <- function(v, classes_index, country_region_index,
+                                  types, terms, options) {
+  n_draws <- nrow(v[[1]])
+  out <- NULL
+  for (i in seq_len(n_draws)) {
+    v_i <- lapply(v, function(a) {
+      d <- dim(a)[-1]
+      array(a[i + (seq_len(prod(d)) - 1) * nrow(a)], d)
+    })
+    terms_i <- dynamical_terms(v_i, classes_index = classes_index,
+                               country_region_index = country_region_index,
+                               types = types, options = options)[terms]
+    if (is.null(out)) {
+      out <- lapply(terms_i, function(x) {
+        array(NA_real_, c(n_draws, dim(as.matrix(x))))
+      })
+    }
+    for (name in terms) {
+      out[[name]][i, , ] <- terms_i[[name]]
+    }
+  }
+  out
+}
+
+# The parameters the predictions need, for the draws in `draw_index`:
+#   effect_type          draws x n_covs x n_types, exp(beta_type)
+#   logit_init_relative  draws x n_countries x n_types, the logit relative
+#                        initial state (above init_frac_min) of each fitted
+#                        country, to which a cell's initial-state covariate
+#                        effects are added (dynamical_logit_cells())
+#   init_coef            draws x n_init_covs x n_types, the coefficients of
+#                        the initial-state covariates (NULL for none)
+#   rho_types            draws x n_types, the observation overdispersion
+#   mortality_floor      draws (NULL for none)
+#   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
+#                        none, see reversion_kappa())
+#   init_min             n_types, init_frac_min
+#   x_cells_init         the fit's initial-state covariates, one row per
+#                        cell_id (NULL for none)
+#   variables            every variable, as draws x dim arrays, with centred
+#                        country levels converted to the non-centred
+#                        deviations (init_noncentred_draws()), on which
+#                        map_logit_init() draws countries without data
+# and the options, types and classes_index. `df` is the full data, for the
+# country -> region lookup the model was built with (dynamical_lookups()).
 dynamical_parameter_draws <- function(fold,
                                       classes_index,
                                       types,
+                                      df,
                                       draw_index = paired_draw_index(fold),
-                                      logit_init_mean = NULL) {
+                                      options = fold$options) {
 
   # as.matrix() on an mcmc.list stacks chains in order, which is how fit_fold()
   # flattened the calculate() output that p_draws came from
   draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
+  n_draws <- nrow(draws_matrix)
+  n_types <- length(types)
 
-  # regression coefficients, doubly hierarchical: overall -> class -> type.
-  # The sweeps recycle a draws x n_covs matrix down a draws x n_covs x k array
-  beta_overall <- extract_parameter(draws_matrix, "beta_overall")
-  sigma_overall <- extract_parameter(draws_matrix, "sigma_overall")
-  sigma_class <- extract_parameter(draws_matrix, "sigma_class")
-  beta_class <- extract_parameter(draws_matrix, "beta_class_raw") *
-    as.vector(sigma_overall) + as.vector(beta_overall)
-  effect_type <- exp(beta_class[, , classes_index, drop = FALSE] +
-                       extract_parameter(draws_matrix, "beta_type_raw") *
-                         as.vector(sigma_class))
+  variable_names <- unique(sub("\\[.*$", "", colnames(draws_matrix)))
+  v <- lapply(setNames(nm = variable_names), extract_parameter,
+              draws_matrix = draws_matrix)
+  stopifnot(!is.null(options),
+            identical(dim(v$logit_init_mean), c(n_draws, n_types)))
 
-  if (is.null(logit_init_mean)) {
-    logit_init_mean <- logit_init_mean_draws(fold, draw_index)
-  }
-  stopifnot(identical(dim(logit_init_mean),
-                      c(length(draw_index), length(types))))
+  country_region_index <- dynamical_lookups(df)$country_region_index
+  v <- init_noncentred_draws(v, country_region_index, options)
+  reversion <- !isFALSE(options$reversion)
+  terms <- dynamical_terms_draws(
+    v, classes_index, country_region_index, types,
+    terms = c("beta_type", "logit_init_relative", "rho_types",
+              if (reversion) "kappa_type"),
+    options = options)
 
-  list(effect_type = effect_type,
-       logit_init_mean = logit_init_mean,
-       init_country_sd = extract_parameter(draws_matrix, "init_country_sd"),
-       init_region_sd = extract_parameter(draws_matrix, "init_region_sd"),
-       init_country_raw = extract_parameter(draws_matrix, "init_country_raw"),
-       init_region_raw = extract_parameter(draws_matrix, "init_region_raw"),
-       init_frac_min = ifelse(types == "DDT", 0.75, 0.9),
-       n_draws = length(draw_index))
+  list(effect_type = exp(terms$beta_type),
+       logit_init_relative = terms$logit_init_relative,
+       init_coef = if (!is.null(options$init_covariates)) {
+         array(v$init_coef,
+               c(n_draws, length(options$init_covariates), n_types),
+               dimnames = list(NULL, options$init_covariates, types))
+       },
+       rho_types = matrix(terms$rho_types, n_draws),
+       mortality_floor = if (isTRUE(options$mortality_floor)) {
+         c(v$mortality_floor)
+       },
+       kappa_type = if (reversion) matrix(terms$kappa_type, n_draws),
+       init_min = init_frac_constants(types)$min,
+       x_cells_init = select_init_covariates(fold$x_cells_init, options),
+       variables = v,
+       options = options,
+       types = types,
+       classes_index = classes_index,
+       n_draws = n_draws)
 }
 
-# Draws of logit q_0, the initial fraction susceptible, per country:
-#   country  for each output country, its index among the fitted countries, or
-#            NA for a country without data
-#   region   for each output country, its index among the fitted regions;
-#            an index beyond them is a region without data
-# Countries and regions without data get fresh N(0, 1) raw deviations (the
-# hierarchical model's prediction for a new one), one per posterior draw and
-# type, drawn with the caller's RNG and shared by every country with the same
-# index. Returns a draws x countries x types array.
-dynamical_logit_init <- function(parameters, country, region) {
-  stopifnot(length(country) == length(region), !anyNA(region))
-  n_draws <- parameters$n_draws
-  n_types <- length(parameters$init_frac_min)
-  n_regions_fitted <- dim(parameters$init_region_raw)[2]
-
-  fresh <- function(n) array(rnorm(n_draws * n * n_types),
-                             c(n_draws, n, n_types))
-  new_countries <- which(is.na(country))
-  country_raw <- parameters$init_country_raw[, pmax(country, 1, na.rm = TRUE),
-                                             , drop = FALSE]
-  country_raw[, new_countries, ] <- fresh(length(new_countries))
-  region_raw <- array(NA_real_, c(n_draws, max(region, n_regions_fitted),
-                                  n_types))
-  region_raw[, seq_len(n_regions_fitted), ] <- parameters$init_region_raw
-  new_regions <- setdiff(unique(region), seq_len(n_regions_fitted))
-  region_raw[, new_regions, ] <- fresh(length(new_regions))
-
-  # logit of q_0 = min + range * ilogit(l), computed without forming q_0,
-  # which can round to 1 when l is large: 1 - q_0 = range * ilogit(-l)
-  logit_init <- array(NA_real_, c(n_draws, length(country), n_types))
-  for (k in seq_len(n_types)) {
-    l <- country_raw[, , k] * parameters$init_country_sd[, k] +
-      region_raw[, region, k] * parameters$init_region_sd[, k] +
-      parameters$logit_init_mean[, k]
-    min_k <- parameters$init_frac_min[k]
-    logit_init[, , k] <- log(min_k + (1 - min_k) * plogis(l)) -
-      log(1 - min_k) - plogis(-l, log.p = TRUE)
+# `parameters` (dynamical_parameter_draws()) for its draws `draws` only
+subset_draws <- function(parameters, draws) {
+  rows <- function(x) {
+    if (is.null(x)) return(NULL)
+    if (is.null(dim(x))) return(x[draws])
+    do.call(`[`, c(list(x, draws), rep(list(TRUE), length(dim(x)) - 1),
+                   drop = FALSE))
   }
-  logit_init
+  for (name in c("effect_type", "logit_init_relative", "init_coef",
+                 "rho_types", "mortality_floor", "kappa_type")) {
+    parameters[name] <- list(rows(parameters[[name]]))
+  }
+  parameters$variables <- lapply(parameters$variables, rows)
+  parameters$n_draws <- length(draws)
+  parameters
 }
 
-# The recursion for cells of one insecticide type:
-#   effect      draws x n_covs, exp(beta_type) for the type
-#   logit_init  draws x cells, logit q_0 at each cell's country
+# Logit q_0 at cells, draws x cells, for type k, from the logit relative
+# initial state at each cell's country (`logit_init`, draws x cells) and the
+# cells' initial-state covariates x_init (cells x covariates, named columns;
+# for fits with them), as logit_init_relative_rows() and closed_form_states()
+# in the model
+cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
+  init_coef <- parameters$init_coef
+  if (!is.null(init_coef)) {
+    stopifnot(!is.null(x_init), nrow(x_init) == ncol(logit_init))
+    logit_init <- logit_init +
+      matrix(init_coef[, , k], nrow = parameters$n_draws) %*%
+      t(x_init[, dimnames(init_coef)[[2]], drop = FALSE])
+  }
+  floored_logit(logit_init, parameters$init_min[k])
+}
+
+# The recursion for cells of insecticide type k:
+#   parameters  dynamical_parameter_draws() (or subset_draws())
+#   logit_init  draws x cells, the logit relative initial state at each cell's
+#               country (parameters$logit_init_relative, or map_logit_init())
 #   x           cells x years x n_covs covariates, year index 1 the baseline
 #               year, covariates in the column order of x_cell_years
 #   years_keep  year indices to return
-# Returns a list named by years_keep of draws x cells logit q
-dynamical_logit_cells <- function(effect, logit_init, x, years_keep) {
+#   x_init      cells x initial-state covariates (named columns), for fits
+#               with them
+# Returns a list named by years_keep of draws x cells logit mortality.
+dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
+                                  x_init = NULL) {
   n_cells <- dim(x)[1]
-  stopifnot(ncol(logit_init) == n_cells, max(years_keep) <= dim(x)[2])
+  n_draws <- parameters$n_draws
+  stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
+            max(years_keep) <= dim(x)[2])
+
+  logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
+
+  effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
+  kappa <- parameters$kappa_type[, k]
   cumulative <- 0
   out <- list()
   for (t in seq_len(max(years_keep))) {
     # log1p because the selection term can be tiny
     cumulative <- cumulative +
       log1p(effect %*% t(matrix(x[, t, ], nrow = n_cells)))
-    if (t %in% years_keep) out[[as.character(t)]] <- logit_init - cumulative
+    # reversion: - t kappa in year t (reversion_kappa()), one per draw
+    if (!is.null(kappa)) cumulative <- cumulative + kappa
+    if (t %in% years_keep) {
+      out[[as.character(t)]] <- floored_logit(
+        logit_init - cumulative, parameters$mortality_floor)
+    }
   }
   out
 }
@@ -223,8 +277,9 @@ dynamical_logit_cells <- function(effect, logit_init, x, years_keep) {
 # year) rows (cell_id, type_id, year_id, as in `df`), with the covariates of
 # x_cell_years (one row per (cell_id, year_id) of cell_years_index). The
 # initial condition of a cell is that of the country of its first record in
-# the full `df`, as in fit_fold(). Returns a draws x nrow(rows) matrix, paired
-# with thin_draws(fold$p_draws) when `parameters` are at paired_draw_index().
+# the full `df`, as in the model (dynamical_lookups()), whatever the rows'
+# country_id. Returns a draws x nrow(rows) matrix, paired with
+# thin_draws(fold$p_draws) when `parameters` are at paired_draw_index().
 dynamical_logit <- function(parameters, rows, df, x_cell_years,
                             cell_years_index, max_block = 2.5e7) {
 
@@ -233,18 +288,8 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   if (any(rows$year_id > n_times | rows$year_id < 1)) {
     stop("rows fall outside the covariate years 1..", n_times)
   }
-
-  # the lookups fit_fold() builds: each country's region and each cell's
-  # country, from their first record in df
-  country_region <- df %>%
-    distinct(country_id, .keep_all = TRUE) %>%
-    arrange(country_id)
-  stopifnot(identical(country_region$country_id,
-                      seq_len(dim(parameters$init_country_raw)[2])))
-  logit_init <- dynamical_logit_init(parameters, country_region$country_id,
-                                     country_region$region_id)
-  cell_country <- df %>% distinct(cell_id, .keep_all = TRUE)
-  stopifnot(all(rows$cell_id %in% cell_country$cell_id))
+  cell_country <- dynamical_lookups(df)$cell_country_lookup
+  stopifnot(!anyNA(cell_country[rows$cell_id]))
 
   # row of x_cell_years for each (cell, year)
   x_row <- matrix(NA_integer_, max(cell_years_index$cell_id), n_times)
@@ -267,12 +312,12 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
       stopifnot(!anyNA(x_index))
       x <- array(x_cell_years[as.vector(x_index), , drop = FALSE],
                  c(length(cells), max(years_keep), ncol(x_cell_years)))
-      cell_init <- logit_init[, cell_country$country_id[match(cells,
-                                                              cell_country$cell_id)],
-                              k]
-      logit <- dynamical_logit_cells(parameters$effect_type[, , k],
-                                     matrix(cell_init, nrow = n_draws), x,
-                                     years_keep)
+      logit <- dynamical_logit_cells(
+        parameters, k,
+        matrix(parameters$logit_init_relative[, cell_country[cells], k],
+               nrow = n_draws),
+        x, years_keep,
+        x_init = parameters$x_cells_init[cells, , drop = FALSE])
       for (t in years_keep) {
         at_t <- target[unique_rows$year_id[target] == t]
         result[, at_t] <- logit[[as.character(t)]][

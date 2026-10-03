@@ -10,7 +10,7 @@ ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 ir_yr <- 2025
 
 # load admin borders for plotting
-borders <- readRDS("data/clean/gadm_polys.RDS")
+borders <- readRDS("data/clean/country_borders.RDS")
 
 # load mask with limits of transmission and water bodies for plotting
 pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")

@@ -1,5 +1,8 @@
 # illustrate the predictive distribution validation metric
 
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 
@@ -12,7 +15,7 @@ mask <- rast("data/clean/raster_mask.tif")
 # get posterior predictive simulations of observations
 died_sim <- betabinomial_p_rho(N = df$mosquito_number,
                                p = population_mortality_vec,
-                               rho = rho_classes[df$class_id])
+                               rho = rho_types[df$type_id])
 mortality_sim <- died_sim / df$mosquito_number
 
 # summarise fit to data
