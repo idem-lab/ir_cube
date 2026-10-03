@@ -2,6 +2,9 @@
 # gradients
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 source("R/validation_functions.R")
@@ -9,12 +12,32 @@ source("R/validation_functions.R")
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
+# the covariates at the data cells, on their own scales (R/model_covariates.R)
+source("R/model_covariates.R")
+all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
+                                 model_options$selection_columns)
+
 mask <- rast("data/clean/raster_mask.tif")
+
+# country borders for plotting
+borders <- readRDS("data/clean/country_borders.RDS")
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.85),
+                     inherit.aes = FALSE)
+country_borders <- geom_sf(data = borders,
+                           col = grey(0.4),
+                           linewidth = 0.1,
+                           fill = "transparent",
+                           inherit.aes = FALSE)
+
+insecticides_col <- insecticide_colours()
 
 # draw the posterior predictive distribution at each observation. The
 # predicted fraction and the overdispersion are drawn in one call so that each
 # pair comes from the same posterior sample
-rho_observations <- rho_classes[df$class_id]
+rho_observations <- rho_types[df$type_id]
+set.seed(2024)
 sims <- calculate(population_mortality_vec,
                   rho_observations,
                   values = draws,
@@ -36,6 +59,8 @@ df_validate <- df %>%
     # to the mid-P value, which is not uniform under calibration for discrete
     # data and so would show a spurious bulge here (#12 review)
     z_resid = pit_to_z(ppd_pit(ppd, n_rep = 1)[, 1]),
+    insecticide_type = factor(insecticide_type,
+                              levels = insecticides_plot_order)
   ) %>%
   # add on covariate values
   left_join(
@@ -50,9 +75,9 @@ df_validate <- df %>%
     )$cluster
   )
 
-# plot and fit models comparing this with covariate values
-
+# map the residuals, largest on top
 df_validate %>%
+  arrange(abs(z_resid)) %>%
   ggplot(
     aes(
       x = longitude,
@@ -60,23 +85,26 @@ df_validate %>%
       colour = z_resid
     )
   ) +
-  geom_spatraster(
-    data = mask
-  ) +
+  africa_bg +
+  country_borders +
   geom_point(
-    alpha = 0.5,
-    size = 2
+    size = 0.6
   ) +
-  scale_fill_gradient(
-    low = grey(0.9),
-    high = grey(0.9),
-    na.value = "transparent",
-    guide = "none"
+  scale_colour_distiller(
+    palette = "RdBu",
+    direction = 1,
+    limits = c(-3, 3),
+    oob = scales::squish,
+    name = "Residual<br>z-score"
   ) +
-  scale_colour_viridis_c() +
-  theme_minimal() +
-  theme_ir_maps() +
-  ggtitle("Residuals")
+  facet_wrap(~insecticide_type) +
+  coord_sf(xlim = c(-18, 52), ylim = c(-35, 38)) +
+  theme_ir_maps()
+
+ggsave("figures/internal_validation_residual_map.png",
+       bg = "white",
+       width = 9,
+       height = 9)
 
 space_fit <- df_validate %>%
   filter(insecticide_class == "Pyrethroids") %>%
@@ -95,16 +123,21 @@ coords_pred <- mask_lores %>%
   rename(
     latitude = y,
     longitude = x
-  ) %>%
-  mutate(
-    z_resid_pred = predict(space_fit, ., se.fit = TRUE)$fit,
-    z_resid_sd = predict(space_fit, ., se.fit = TRUE)$se.fit
   )
+space_pred <- predict(space_fit, coords_pred, se.fit = TRUE)
 
 z_resid_raster <- c(mask_lores, mask_lores)
-names(z_resid_raster) <- c("mean", "sd") 
-z_resid_raster$mean[cells(z_resid_raster)] <- as.matrix(coords_pred$z_resid_pred)
-z_resid_raster$sd[cells(z_resid_raster)] <- as.matrix(coords_pred$z_resid_sd)
+names(z_resid_raster) <- c("mean", "sd")
+z_resid_raster$mean[cells(z_resid_raster)] <- as.matrix(space_pred$fit)
+z_resid_raster$sd[cells(z_resid_raster)] <- as.matrix(space_pred$se.fit)
+
+# drop the smooth where it extrapolates beyond the pyrethroid data: where its
+# standard error exceeds that at 95% of data locations
+data_pred <- predict(space_fit, se.fit = TRUE)
+z_resid_raster$mean[z_resid_raster$sd > quantile(data_pred$se.fit, 0.95)] <- NA
+
+# symmetric colour limits about zero, from the smooth at the data
+smooth_limit <- max(abs(data_pred$fit))
 
 ggplot() +
   geom_spatraster(
@@ -113,17 +146,24 @@ ggplot() +
     ),
     data = z_resid_raster
   ) +
+  country_borders +
   scale_fill_distiller(
-    type = "div",
+    palette = "RdBu",
+    direction = 1,
     na.value = "transparent",
-    limits = c(-4, 4)
+    limits = c(-1, 1) * smooth_limit,
+    oob = scales::squish,
+    name = "Smoothed<br>residual<br>z-score"
   ) +
-  theme_ir_maps() +
-  ggtitle(
-    "Residual spatial correlation in model"
-  )
+  coord_sf(xlim = c(-18, 52), ylim = c(-35, 38)) +
+  theme_ir_maps()
 
-# plot against covariates
+ggsave("figures/internal_validation_residual_smooth.png",
+       bg = "white",
+       width = 6,
+       height = 6)
+
+# plot against covariates, on a square-root scale except for net use
 cov_names <- colnames(all_extract)[-(1:2)]
 df_validate %>%
   select(
@@ -138,9 +178,10 @@ df_validate %>%
   ) %>%
   mutate(
     covariate_value = case_when(
-      covariate_name != "net_coverage" ~ sqrt(covariate_value),
+      covariate_name != "nets" ~ sqrt(covariate_value),
       .default = covariate_value
-    )
+    ),
+    covariate_name = factor(covariate_name, levels = cov_names)
   ) %>%
   group_by(
     covariate_name,
@@ -156,21 +197,40 @@ df_validate %>%
     aes(
       x = covariate_value,
       y = z_resid,
-      group = covariate_name
+      colour = insecticide_type
     )
   ) +
   geom_point(
-    alpha = 0.1
+    alpha = 0.1,
+    size = 0.3,
+    colour = grey(0.4)
   ) +
   geom_hline(yintercept = 0,
-             colour = "red",
              linetype = 2) +
-  geom_smooth() +
+  geom_smooth(
+    method = "gam",
+    formula = y ~ s(x, k = 5)
+  ) +
+  scale_colour_manual(
+    values = insecticides_col,
+    guide = "none"
+  ) +
   facet_grid(insecticide_type ~ covariate_name,
              scales = "free_x") +
-  theme_minimal()
+  xlab("Covariate value (square root, except nets)") +
+  ylab("Residual z-score") +
+  theme_minimal() +
+  theme(
+    strip.text.y = element_text(angle = 0),
+    axis.text.x = element_text(size = 6)
+  )
 
-# plot against time, in different regions
+ggsave("figures/internal_validation_residual_covariates.png",
+       bg = "white",
+       width = 18,
+       height = 12)
+
+# plot against time, in countries with many records
 df_validate %>%
   group_by(country_name) %>%
   filter(n() >= 500) %>%
@@ -187,57 +247,69 @@ df_validate %>%
   ggplot(
     aes(
       x = year_start,
-      y = z_resid
+      y = z_resid,
+      colour = insecticide_type
     )
   ) +
   geom_point(
-    alpha = 0.1
+    alpha = 0.2,
+    size = 0.3,
+    colour = grey(0.4)
   ) +
   geom_hline(yintercept = 0,
-             colour = "red",
              linetype = 2) +
-  geom_smooth() +
-  facet_grid(country_name ~ insecticide_type,
-             scales = "free_x") +
-  theme_minimal()
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x
+  ) +
+  scale_colour_manual(
+    values = insecticides_col,
+    guide = "none"
+  ) +
+  facet_grid(country_name ~ insecticide_type) +
+  xlab("") +
+  ylab("Residual z-score") +
+  theme_minimal() +
+  theme(
+    strip.text.y = element_text(angle = 0),
+    axis.text.x = element_text(size = 6, angle = 45, hjust = 1)
+  )
+
+ggsave("figures/internal_validation_residual_year_country.png",
+       bg = "white",
+       width = 14,
+       height = 14)
 
 
 # group distributions in different ways, and compute Kolmogorov-Smirnov
 # D statistics (and p values) for each
+ks_summary <- function(z) {
+  test <- ks.test(z, pnorm)
+  tibble(n = length(z),
+         D = unname(test$statistic),
+         p = test$p.value)
+}
 
-
-
-df_validate %>%
-  group_by(year_start, insecticide_class) %>%
-  summarise(
-    n = n(),
-    D = ks.test(z_resid, pnorm)$statistic,
-    p = ks.test(z_resid, pnorm)$p.value
-  ) %>%
+ks_type <- df_validate %>%
+  group_by(insecticide_class, insecticide_type) %>%
+  reframe(ks_summary(z_resid)) %>%
   arrange(desc(D))
 
+ks_year_class <- df_validate %>%
+  group_by(year_start, insecticide_class) %>%
+  reframe(ks_summary(z_resid)) %>%
+  arrange(desc(D))
 
-df_validate %>%
+ks_cluster_class <- df_validate %>%
   filter(insecticide_type != "DDT") %>%
   group_by(cluster, insecticide_class) %>%
-  summarise(
-    n = n(),
-    D = ks.test(z_resid, pnorm)$statistic,
-    p = ks.test(z_resid, pnorm)$p.value
-  ) %>%
+  reframe(ks_summary(z_resid)) %>%
   arrange(desc(D))
 
-df_validate %>%
-  arrange(z_resid) %>%
-  ggplot(
-    aes(x = longitude,
-        y = latitude,
-        fill = abs(z_resid))#factor(cluster))# == 7)
-  ) +
-  geom_point(
-    shape = 21
-  ) +
-  facet_wrap(~insecticide_type) +
-  coord_equal() +
-  theme_minimal()
+write_csv(ks_type, "outputs/internal_validation_ks_type.csv")
+write_csv(ks_year_class, "outputs/internal_validation_ks_year_class.csv")
+write_csv(ks_cluster_class, "outputs/internal_validation_ks_cluster_class.csv")
 
+ks_type
+ks_year_class
+ks_cluster_class

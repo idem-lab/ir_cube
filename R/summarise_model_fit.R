@@ -1,22 +1,26 @@
 # summarise model
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
+# the covariates at the data cells, on their own scales (R/model_covariates.R)
+source("R/model_covariates.R")
+all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
+                                 model_options$selection_columns)
+
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
-# load covariate rasters (need to reload these even if restoring workspace
-# because pointers)
-covs_flat <- rast("data/clean/flat_covariates.tif")
-
 # summarise the covariate effect sizes (at insecticide class level)
 effect_sizes <- summary(calculate(exp(beta_class[, 1]), values = draws))$statistics[, c("Mean", "SD")]
-rownames(effect_sizes) <- colnames(x_cell_years) #c("itn_coverage", names(covs_flat))
+rownames(effect_sizes) <- colnames(x_cell_years)
 round(effect_sizes, 2)
 
 # get RMSE and MAE for observed data and posterior mean within-sample predictions
@@ -31,7 +35,7 @@ mae <- mean(abs(pop_susc_post_mean - obs))
 # get posterior predictive simulations of observations
 died_sim <- betabinomial_p_rho(N = df$mosquito_number,
                                p = population_mortality_vec,
-                               rho = rho_classes[df$class_id])
+                               rho = rho_types[df$type_id])
 mortality_sim <- died_sim / df$mosquito_number
 
 # summarise fit to data
@@ -49,13 +53,53 @@ dharma <- DHARMa::createDHARMa(
 # size and a very small deviation
 plot(dharma)
 
+png("figures/internal_validation_dharma.png",
+    width = 10,
+    height = 5,
+    units = "in",
+    res = 300)
+plot(dharma)
+dev.off()
+
 # looks relatively uniform for each insecticide
-par(mfrow = n2mfrow(length(types)))
-for (type in types) {
-  hist(dharma$scaledResiduals[df$insecticide_type == type],
-       breaks = 50,
-       main = type)
-}
+tibble(
+  scaled_residual = dharma$scaledResiduals,
+  insecticide_type = factor(df$insecticide_type,
+                            levels = insecticides_plot_order)
+) %>%
+  ggplot(
+    aes(
+      x = scaled_residual,
+      fill = insecticide_type
+    )
+  ) +
+  geom_histogram(
+    breaks = seq(0, 1, by = 0.02)
+  ) +
+  geom_hline(
+    aes(yintercept = expected),
+    # the count per bin expected if the residuals are uniform
+    data = function(d) {
+      d %>%
+        count(insecticide_type) %>%
+        mutate(expected = n / 50)
+    },
+    linetype = 2
+  ) +
+  scale_fill_manual(
+    values = insecticide_colours(),
+    guide = "none"
+  ) +
+  facet_wrap(~insecticide_type,
+             scales = "free_y") +
+  xlab("Scaled (quantile) residual") +
+  ylab("Number of bioassays") +
+  theme_minimal()
+
+ggsave("figures/internal_validation_dharma_histograms.png",
+       bg = "white",
+       width = 9,
+       height = 7)
 
 # DDT the most obviously skewed
 not_ddt_index <- df$insecticide_type != "DDT"
@@ -84,16 +128,6 @@ z <- qnorm(dharma$scaledResiduals)
 plot(z ~ jitter(df$year_start),
      cex = 0.5)
 abline(h = 0)
-
-insecticides_plot <- tibble(
-  insecticide = types,
-  class = classes[classes_index]
-) %>%
-  arrange(desc(class), insecticide) %>%
-  filter(
-    !(insecticide %in% c("DDT")) 
-  ) %>%
-  pull(insecticide)
 
 # plot predicted trends and numbers of nets at a few unique locations
 
@@ -205,7 +239,6 @@ ingredient_weights <- readRDS("temporary/ingredient_weights.RDS")
 
 # now do predictions for these, for deltamethrin
 ingredient_ids <- match(names(ingredient_weights), types)
-# deltamethrin_id <- match("Deltamethrin", types)
 
 # compute a matrix of effective susceptibilities over these cells and years
 effective_susc <- zeros(nrow(pred_lookup), 1, n_times)
@@ -280,9 +313,6 @@ itns_plot <- data_plot %>%
   theme(
     strip.text.x = element_blank()
   )
-
-# # patchwork is bugging out with recent ggplot, use 3.4.4:
-# remotes::install_version("ggplot2", version = "3.4.4", repos = "http://cran.us.r-project.org")
 
 ir_plot / itns_plot
 
@@ -381,12 +411,12 @@ sample_size_plot <- 100
 binomial_died <- binomial(sample_size_plot, population_mortality_plot)
 binomial_mortality <- binomial_died / sample_size_plot
 
-rho_index <- classes_index[index_plot[, "type_id"]]
-
 # simulate mortalities under betabinomial sampling
-betabinomial_died <- betabinomial_p_rho(N = sample_size_plot,
-                                        p = population_mortality_plot,
-                                        rho = rho_classes[rho_index])
+betabinomial_died <- betabinomial_p_rho(
+  N = sample_size_plot,
+  p = population_mortality_plot,
+  rho = rho_types[index_plot[, "type_id"]]
+)
 betabinomial_mortality <- betabinomial_died / sample_size_plot
 
 sims <- calculate(population_mortality_plot,
@@ -454,9 +484,7 @@ points_plot <- df %>%
   
 
 # set the colours for these insecticides
-colour_types <- scales::hue_pal(direction = -1)(8)
-types_plot_id <- match(insecticides_plot_small, insecticides_plot)
-colours_plot <- colour_types[types_plot_id]
+colours_plot <- insecticide_colours()[insecticides_plot_small]
 
 # plot these, then add cell data over the top
 preds_plot %>%
@@ -509,7 +537,7 @@ preds_plot %>%
   ) +
   scale_fill_manual(
     values = colours_plot,
-    guide = FALSE
+    guide = "none"
   ) +
   scale_y_continuous(
     labels = scales::percent,
