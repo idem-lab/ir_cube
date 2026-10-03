@@ -13,6 +13,9 @@ report <- function(...) {
 # wait until enough memory is available, e.g. before loading a saved fold;
 # other jobs share the machine
 wait_for_memory <- function(needed_gb = 12, poll_seconds = 180) {
+  # off where a scheduler outside R budgets the memory (in a container
+  # /proc/meminfo is the host's)
+  if (Sys.getenv("IR_CUBE_NO_MEMORY_WAIT") == "1") return(invisible(NA))
   repeat {
     meminfo <- readLines("/proc/meminfo")
     available_gb <- as.numeric(gsub("\\D", "", grep("^MemAvailable", meminfo,
