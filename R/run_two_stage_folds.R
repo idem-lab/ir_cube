@@ -102,7 +102,7 @@ if (step == "stage_one") {
   draw_index <- paired_draw_index(fold)
   p_saved <- thin_draws(fold$p_draws)
   stopifnot(nrow(p_saved) == length(draw_index))
-  parameters <- dynamical_parameter_draws(fold, classes_index, types,
+  parameters <- dynamical_parameter_draws(fold, classes_index, types, df,
                                           draw_index)
   experiment_label <- fold$experiment
   rm(fold)

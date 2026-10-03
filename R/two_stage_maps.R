@@ -15,9 +15,8 @@
 #            that its data and covariates are the ones the current scripts
 #            build, and recompute its 2000 paired posterior logit draws at
 #            every assay and its initial conditions in every country
-#            (R/dynamical_predictions.R). Check the recomputation against the
-#            maps predict.R saved in outputs/ir_maps (see below). Save, per
-#            type, the draws at its assays and the parameters the grid
+#            (R/dynamical_predictions.R), with the fit's model options. Save,
+#            per type, the draws at its assays and the parameters the grid
 #            recursion needs to outputs/two_stage/maps/<type>/dynamical.rds
 #            (also read by R/fig_two_stage_components.R);
 #   <k>      fit the final model for type k (fit_correction(), m_ref = the
@@ -36,14 +35,6 @@
 #            The target is m + omega + xi. u and p are observation-level noise
 #            and are not mapped. Beyond T, xi is the AR(1) forecast;
 #   figures  maps in figures/two_stage/, in the layout of R/fig_ir_maps.R.
-#
-# The saved dynamical maps (outputs/ir_maps) have scrambled country initial
-# conditions: predict.R's greta subassignment pred[index, ] <- raw fills the
-# target in column-major order from the source in row-major order, so every
-# country x type deviation lands on another country and type (#22). The check
-# emulates that, which confirms the draws, covariates and recursion here are
-# the ones behind the saved maps; the maps here use the correct initial
-# conditions. Remove the check once the predict.R fix is merged.
 
 arguments <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(arguments) == 1)
@@ -114,15 +105,21 @@ if (step == "prepare") {
     isTRUE(all.equal(fit_env$x_cell_years, x_cell_years)),
     isTRUE(all.equal(fit_env$cell_years_index, cell_years_index))
   )
-  fold <- list(draws = fit_env$draws)
+  fold <- list(draws = fit_env$draws, options = fit_env$model_options,
+               x_cells_init = fit_env$x_cells_init)
   rm(fit_env)
-  parameters <- dynamical_parameter_draws(fold, classes_index, types)
+  parameters <- dynamical_parameter_draws(fold, classes_index, types, df)
+  design <- parameters$options$selection_columns
   rm(fold)
   invisible(gc())
   logit_assays <- dynamical_logit(parameters, df, df, x_cell_years,
                                   cell_years_index)
   set.seed(21)
   logit_init <- map_logit_init(parameters, countries, regions, df)
+  # countries with data keep the fit's initial states
+  stopifnot(isTRUE(all.equal(logit_init[, countries, , drop = FALSE],
+                             parameters$logit_init_relative,
+                             check.attributes = FALSE)))
   report("dynamical draws: %i assays x %i draws", ncol(logit_assays),
          nrow(logit_assays))
 
@@ -133,7 +130,7 @@ if (step == "prepare") {
   stopifnot(!anyNA(data_cells))
   n_fit_years <- max(cell_years_index$year_id)
   x_data <- map_x(map_covariates(grid$cells[data_cells], baseline_year,
-                                 end_year),
+                                 end_year, design),
                   seq_along(data_cells), n_fit_years)
   x_grid <- sapply(seq_len(ncol(x_cell_years)), function(j) {
     x_data[cbind(cell_years_index$cell_id, cell_years_index$year_id, j)]
@@ -141,60 +138,11 @@ if (step == "prepare") {
   stopifnot(max(abs(x_grid - x_cell_years)) < 1e-12)
   rm(x_data, x_grid)
 
-  # check against the saved maps (#22): posterior means over 500 random draws
-  # there and the 2000 paired draws here, so they agree up to Monte Carlo
-  # error, judged against the posterior SD
-  refill <- function(a) {
-    for (d in seq_len(dim(a)[1])) {
-      a[d, , ] <- matrix(as.vector(t(a[d, , ])), dim(a)[2], dim(a)[3])
-    }
-    a
-  }
-  parameters_fill <- parameters
-  parameters_fill$init_country_raw <- refill(parameters$init_country_raw)
-  parameters_fill$init_region_raw <- refill(parameters$init_region_raw)
-  set.seed(22)
-  logit_init_fill <- map_logit_init(parameters_fill, countries, regions, df)
-  check <- sort(sample(which(!is.na(grid$country)), 5000))
-  check_country <- match(grid$country[check], dimnames(logit_init)[[2]])
-  check_years <- c(2000, 2010, 2020, 2030)
-  x_check <- map_x(map_covariates(grid$cells[check], baseline_year, end_year),
-                   seq_along(check), end_year - baseline_year + 1)
-  map_check <- bind_rows(lapply(seq_along(types), function(k) {
-    logit <- dynamical_logit_cells(parameters$effect_type[, , k],
-                                   logit_init_fill[, check_country, k],
-                                   x_check, check_years - baseline_year + 1)
-    bind_rows(lapply(check_years, function(y) {
-      p <- plogis(logit[[as.character(y - baseline_year + 1)]])
-      saved <- rast(sprintf("outputs/ir_maps/%s/ir_%i_susceptibility.tif",
-                            types[k], y))[grid$cells[check]][, 1]
-      tibble(insecticide_type = types[k], year = y,
-             difference = colMeans(p) - saved,
-             # SE of the difference of two Monte Carlo means (2000 and 500
-             # draws), floored so that cells at p ~ 1 do not dominate
-             z = difference / (pmax(apply(p, 2, sd), 1e-3) *
-                                 sqrt(1 / 2000 + 1 / 500)))
-    }))
-  }))
-  write.csv(map_check %>%
-              group_by(insecticide_type, year) %>%
-              summarise(n_na = sum(is.na(z)), mean_z = mean(z), sd_z = sd(z),
-                        max_abs_difference = max(abs(difference)),
-                        .groups = "drop"),
-            file.path(output_dir, "dynamical_map_check.csv"), row.names = FALSE)
-  report("recomputed vs saved dynamical maps: mean z %.3f, sd z %.2f, |z| > 4 in %.2f%%",
-         mean(map_check$z), sd(map_check$z), 100 * mean(abs(map_check$z) > 4))
-  # a mismatch in data, covariates or parameters shows as a bias or a spread of
-  # z far beyond Monte Carlo error. The saved maps share one set of 500 draws
-  # across cells, so the mean z need not be 0 (it is about 0.2)
-  stopifnot(!anyNA(map_check$z), abs(mean(map_check$z)) < 0.5,
-            sd(map_check$z) < 1.5, mean(abs(map_check$z) > 4) < 0.005)
-
   for (k in seq_along(types)) {
     dir.create(type_dir(types[k]), showWarnings = FALSE)
     saveRDS(list(logit_train = logit_assays[, df$type_id == k, drop = FALSE],
-                 effect = parameters$effect_type[, , k],
-                 logit_init = logit_init[, , k]),
+                 parameters = parameters,
+                 logit_init = logit_init),
             file.path(type_dir(types[k]), "dynamical.rds"))
   }
   report("saved; peak memory %.1f GB", peak_memory_gb())
@@ -234,10 +182,11 @@ if (step != "figures") {
 
   time_map <- system.time({
     grid <- grid_cells()
-    covariates <- map_covariates(grid$cells, baseline_year, end_year)
+    covariates <- map_covariates(grid$cells, baseline_year, end_year,
+                                 dynamical$parameters$options$selection_columns)
     xy <- terra::xyFromCell(mask, grid$cells)
     coords <- project_km(xy[, 1], xy[, 2])
-    cell_country <- match(grid$country, colnames(dynamical$logit_init))
+    cell_country <- match(grid$country, dimnames(dynamical$logit_init)[[2]])
     rm(xy)
 
     # the map draws are an even subset of the 2000, by the scoring's rule.
@@ -246,7 +195,8 @@ if (step != "figures") {
     map_draws <- thin_draws(matrix(seq_len(nrow(dynamical$logit_train))),
                             n_map_draws)[, 1]
     batches <- split(map_draws, ceiling(seq_along(map_draws) / map_batch_size))
-    effect <- dynamical$effect
+    batch_parameters <- lapply(batches, subset_draws,
+                               parameters = dynamical$parameters)
     logit_init <- dynamical$logit_init
     set.seed(string_seed(paste("maps draws", type, sep = "__")))
     fields <- lapply(batches, function(draws) {
@@ -295,10 +245,11 @@ if (step != "figures") {
       sum_dynamical <- sum_two_stage
       for (b in seq_along(batches)) {
         draws <- batches[[b]]
-        m <- dynamical_logit_cells(effect[draws, , drop = FALSE],
-                                   logit_init[draws, cell_country[ok],
-                                              drop = FALSE],
-                                   x_chunk, year_index)
+        m <- dynamical_logit_cells(batch_parameters[[b]], k,
+                                   matrix(logit_init[draws, cell_country[ok],
+                                                     k], length(draws)),
+                                   x_chunk, year_index,
+                                   x_init = covariates$init[ok, , drop = FALSE])
         correction <- project(fields[[b]], new, count = b == 1)
         for (j in seq_along(map_years)) {
           rows <- (j - 1) * length(ok) + seq_along(ok)
@@ -366,7 +317,7 @@ write.csv(hyperparameters, file.path(output_dir, "hyperparameters.csv"),
 # the look of R/fig_ir_maps.R: grey Africa background, thin grey borders, masked
 # to the limits of Pf transmission and water bodies, one panel per year in two
 # rows with the legend in the eighth slot
-borders <- readRDS("data/clean/gadm_polys.RDS")
+borders <- readRDS("data/clean/country_borders.RDS")
 pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 africa_bg <- geom_sf(data = borders, linewidth = 0, fill = grey(0.75))
 border_col <- grey(0.4)
