@@ -1,6 +1,6 @@
 # Fit the dynamical model to a single cross-validation fold and save the draws.
 #
-#   Rscript R/run_one_fold.R <experiment> <fold> [n_chains] [threads]
+#   Rscript R/run_one_fold.R <experiment> <fold> [n_chains|default] [threads]
 #
 # e.g. Rscript R/run_one_fold.R spatial_blocks 1 4 4
 #      Rscript R/run_one_fold.R temporal_forecasting 2014 4 4
@@ -12,32 +12,31 @@
 arguments <- commandArgs(trailingOnly = TRUE)
 experiment_name <- arguments[1]
 fold_name <- arguments[2]
-n_chains <- if (length(arguments) >= 3) as.integer(arguments[3]) else 4L
 threads <- if (length(arguments) >= 4) as.integer(arguments[4]) else 4L
-# optional overrides, for smoke-testing the path without a real fit
-warmup <- if (length(arguments) >= 5) as.integer(arguments[5]) else 2000L
-n_samples <- if (length(arguments) >= 6) as.integer(arguments[6]) else 5000L
+# overrides of the sampler settings (dynamical_mcmc_settings(), in
+# R/dynamical_model.R): the number of chains, and for smoke-testing the path
+# without a real fit, warmup and samples
+setting_overrides <- list()
+if (length(arguments) >= 3 && arguments[3] != "default") {
+  setting_overrides$n_chains <- as.integer(arguments[3])
+}
+if (length(arguments) >= 5) {
+  setting_overrides$warmup <- as.integer(arguments[5])
+}
+if (length(arguments) >= 6) {
+  setting_overrides$n_samples <- as.integer(arguments[6])
+}
 
-# Order matters here, and for two separate reasons. TensorFlow refuses to change
-# its thread count once initialised, so that has to be set first. And python has
-# to be initialised before terra and sf are attached, because those load the
-# system XML libraries, against which the conda environment's pyexpat is then
-# resolved and tensorflow_probability fails to import. So: load greta, set
-# threads, force python up, and only then source anything else.
-suppressMessages(library(greta))
-
-tensorflow_module <- reticulate::import("tensorflow")
-tensorflow_module$config$threading$set_intra_op_parallelism_threads(
-  as.integer(threads))
-tensorflow_module$config$threading$set_inter_op_parallelism_threads(
-  as.integer(threads))
-
-invisible(calculate(normal(0, 1), nsim = 1))
+# greta first: TensorFlow's thread count is fixed once it starts, and python
+# has to start before terra and sf are attached (R/greta_setup.R)
+source("R/greta_setup.R")
+start_greta(threads = threads)
 
 source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/validation_covariates.R")
 source("R/fit_validation_fold.R")
+settings <- do.call(dynamical_mcmc_settings, setting_overrides)
 
 # find the requested fold
 before <- NULL
@@ -63,11 +62,10 @@ if (experiment_name == "spatial_interpolation") {
   # predictions in the before window are needed for the change-based score, and
   # can only be requested at fitting time
   before <- fold$before
-  # Each origin is scored as its own experiment, because pooling a 2014 forecast
-  # with a 2018 one would average over holdout windows whose true rates of
-  # decline differ by a factor of two. The file name keeps the plain experiment
-  # name and carries the origin in the fold field, so the two new folds sit
-  # alongside the others in outputs/cv_draws.
+  # Each origin is scored as its own experiment: pooling a 2014 forecast with
+  # a 2018 one would average over holdout windows whose true rates of decline
+  # differ by a factor of two. The file name keeps the plain experiment name,
+  # with the origin in the fold field.
   experiment_label <- paste0("temporal_forecasting_", fold$cut_year)
 } else {
   stop("unknown experiment: ", experiment_name)
@@ -93,7 +91,7 @@ if (file.exists(destination)) {
 cat(sprintf("%s | %s / %s | %i training, %i held out | %i chains, %i threads\n",
             format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
             experiment_name, fold_name, nrow(training), nrow(test),
-            n_chains, threads))
+            settings$n_chains, threads))
 flush(stdout())
 
 elapsed <- system.time(
@@ -102,19 +100,14 @@ elapsed <- system.time(
     test_df = test,
     before_df = before,
     x_cell_years = x_cell_years,
+    cell_years_index = cell_years_index,
     df = df,
     classes_index = classes_index,
     types = types,
-    n_covs = n_covs,
-    n_times = n_times,
-    n_unique_cells = n_unique_cells,
-    n_classes = n_classes,
-    n_types = n_types,
-    n_regions = n_regions,
-    n_countries = n_countries,
-    n_chains = n_chains,
-    warmup = warmup,
-    n_samples = n_samples
+    # dynamical_model_options(), set in validation_covariates.R
+    options = model_options,
+    x_cells_init = x_cells_init,
+    settings = settings
   )
 )
 
@@ -127,13 +120,8 @@ dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
 # Everything fit_fold() returns, under the three labels that identify the fold.
 # That includes the draws object and the greta arrays the predictions came from,
 # so that calculate() can be used on a reloaded fold to predict a quantity that
-# was not asked for at fitting time - the only supported way to predict from a
-# fitted greta model, kept deliberately even though the scoring path reads only
-# the matrices, and the bulk of each file's size.
-#
-# This used to list fit's fourteen fields one by one. Copying them wholesale
-# saves the same names in the same order, since fit_fold() returns them in it
-# (#12 review).
+# was not asked for at fitting time, though the scoring reads only the matrices
+# and they are the bulk of each file's size.
 saveRDS(
   c(list(model = "dynamical",
          experiment = experiment_label,

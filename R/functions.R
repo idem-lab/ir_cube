@@ -363,14 +363,7 @@ country_region_lookup <- function() {
         `Sub-region Name` == "Northern Africa" ~ `Sub-region Name`,
         `Sub-region Name` == "Sub-Saharan Africa" ~ `Intermediate Region Name`
       ),
-      # standardise some names to our printable versions
-      country_name = case_when(
-        `Country or Area` == "United Republic of Tanzania" ~ "Tanzania",
-        `Country or Area` == "Democratic Republic of the Congo" ~ "DR Congo",
-        `Country or Area` == "Central African Republic" ~ "CAR",
-        `Country or Area` == "Sao Tome and Principe" ~ "Sao Tome & Principe",
-        .default = `Country or Area`
-      )
+      country_name = printable_country_name(`Country or Area`)
     ) %>%
     select(
       country_name,
@@ -378,3 +371,30 @@ country_region_lookup <- function() {
     )
 }
 
+# our printable versions of some UNSD country names
+printable_country_name <- function(country) {
+  case_when(
+    country == "United Republic of Tanzania" ~ "Tanzania",
+    country == "Democratic Republic of the Congo" ~ "DR Congo",
+    country == "Central African Republic" ~ "CAR",
+    country == "Sao Tome and Principe" ~ "Sao Tome & Principe",
+    .default = country
+  )
+}
+
+
+# the nine modelled insecticide types in plotting order (by class, then name),
+# and the colours the main figures use for them
+insecticides_plot_order <- c("Alpha-cypermethrin",
+                             "Deltamethrin",
+                             "Lambda-cyhalothrin",
+                             "Permethrin",
+                             "Fenitrothion",
+                             "Malathion",
+                             "Pirimiphos-methyl",
+                             "DDT",
+                             "Bendiocarb")
+insecticide_colours <- function() {
+  setNames(rev(scales::hue_pal()(length(insecticides_plot_order))),
+           insecticides_plot_order)
+}

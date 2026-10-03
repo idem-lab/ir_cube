@@ -102,13 +102,9 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
   # null earns its place on point prediction, and letting it choose its own
   # dispersion made coverage a comparison of vagueness (#12 review) - and the
   # two-stage model fixes it at the external value, so they read as missing
-  rho_fitted <- if (!is.null(fold$rho_class_draws)) {
-    # saved compactly as draws by insecticide class, expanded here
-    thin_draws(fold$rho_class_draws)[, fold$class_id, drop = FALSE]
-  } else if (!is.null(fold$rho_draws)) {
-    thin_draws(fold$rho_draws)
-  } else if (!is.null(fold$rho_implied)) {
-    matrix(fold$rho_implied, nrow = nrow(p_draws), ncol = nrow(test))
+  rho_fitted <- if (!is.null(fold$rho_type_draws)) {
+    # saved compactly as draws by insecticide type, expanded here
+    thin_draws(fold$rho_type_draws)[, fold$type_id, drop = FALSE]
   } else {
     matrix(NA_real_, nrow = nrow(p_draws), ncol = nrow(test))
   }
