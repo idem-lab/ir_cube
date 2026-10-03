@@ -2,11 +2,19 @@
 # coverage places
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
+
+# the covariates at the data cells, on their own scales (R/model_covariates.R)
+source("R/model_covariates.R")
+all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
+                                 model_options$selection_columns)
 
 # load time-varying net use data and flatten it
 nets_cube <- rast("data/clean/net_use_cube.tif")
@@ -46,7 +54,7 @@ net_use_cell_lookup <- df %>%
   slice(1) %>%
   ungroup() %>%
   mutate(
-    net_use = terra::extract(nets_flat, pull(., cell)),
+    net_use = terra::extract(nets_flat, pull(., cell))[, 1],
     net_use_class = case_when(
       net_use < 0.3 ~ "A) Low use",
       .default = "B) High use")

@@ -216,6 +216,21 @@ terra::writeRaster(trans_pop_future,
                    "data/clean/pop_scaled_cube_future.tif",
                    overwrite = TRUE)
 
+# log population, min-max scaled over the same years, for the selection design
+# option pop = "log" (#23, selection_design() in R/model_covariates.R)
+log_pop_all <- log(pop_all)
+log_pop_range <- range(unlist(global(log_pop_all, "range", na.rm = TRUE)))
+log_pop_all <- (log_pop_all - log_pop_range[1]) / diff(log_pop_range)
+names(log_pop_all) <- str_replace(names(pop_all), "^pop_", "log_pop_")
+
+terra::writeRaster(log_pop_all[[paste0("log_pop_", 2000:2024)]],
+                   "data/clean/pop_log_scaled_cube.tif",
+                   overwrite = TRUE)
+
+terra::writeRaster(log_pop_all[[paste0("log_pop_", 2025:2030)]],
+                   "data/clean/pop_log_scaled_cube_future.tif",
+                   overwrite = TRUE)
+
 # other static ones
 
 # NB I made a symlink from Gerry's dropbox into my into data raw with the
