@@ -6,24 +6,44 @@ PR #12 asks for, and what it costs.
 
 ---
 
-## 1. Environment: do not upgrade greta
+## 1. Environment: greta 0.6, no greta.dynamics
 
-Sampling this model fails on greta 0.6.0 — `mcmc()` raises a TensorFlow
-`while_loop` shape error whenever the likelihood depends on
-`iterate_dynamic_function()` output. Reported upstream as
-greta-dev/greta.dynamics#45.
+The selection recursion is computed in closed form by one greta op
+(`closed_form_states()` in `R/dynamical_model.R`, #25), so the model no longer
+uses `iterate_dynamic_function()`. That was what stopped greta 0.6.0 sampling
+this model (a TensorFlow `while_loop` shape error, greta-dev/greta.dynamics#45),
+and greta.dynamics is no longer needed.
 
-The working combination, verified for both master's model definition and
-`fit_fold()`:
+greta must be at or after `43f9c52` (0.6.0.9000), which fills subassignments
+into greta arrays column-major, as R does (greta-dev/greta#844, fixed in #847).
+`check_greta_fill()` (`R/greta_setup.R`) checks this behaviour and stops
+if it is wrong.
 
-```r
-remotes::install_version("tensorflow", version = "2.16.0")
-remotes::install_github("njtierney/greta@4cc989f")            # 0.5.0.9000
-remotes::install_github("greta-dev/greta.dynamics@db7df31")   # 0.2.2
+Tested with greta `282944f`, TensorFlow 2.21.0, TensorFlow Probability 0.25.0,
+python 3.12, in a library and conda environment separate from the 0.5 setup:
+
+```bash
+Rscript -e 'remotes::install_github("greta-dev/greta@282944f", lib = "~/R/greta06-lib")'
+~/.local/share/r-miniconda/bin/conda create -n greta06-env python=3.12
+~/.local/share/r-miniconda/envs/greta06-env/bin/python -m pip install \
+  "tensorflow==2.21.*" "tensorflow_probability[tf]==0.25.*"
 ```
 
-Python side is a conda env built by `greta::install_greta_deps()`:
-TensorFlow 2.15.1, TFP 0.23.0.
+and every script that uses greta is run with
+
+```bash
+export R_LIBS=~/R/greta06-lib
+export RETICULATE_PYTHON=~/.local/share/r-miniconda/envs/greta06-env/bin/python
+```
+
+`R_LIBS` rather than `R_LIBS_USER`, which `~/.Renviron` sets. Set
+`RETICULATE_PYTHON` explicitly: otherwise greta 0.6 finds the old
+`greta-env-tf2` (TensorFlow 2.15), and its own uv-managed environment failed to
+resolve here. The other R packages come from the default library, as before.
+
+Under greta 0.6 the model gives the same log density as under 0.5.0.9000
+(`4cc989f`, TensorFlow 2.15.1) at the same parameter values, full data and the
+interpolation fold (difference 0, gradient to 6e-13), and samples.
 
 ## 2. Two ordering constraints, both load-bearing
 
@@ -76,26 +96,250 @@ Rscript R/run_one_fold.R spatial_blocks 1 2 4 5 5
 takes a few minutes and exercises everything. Delete the resulting `.rds`
 afterwards, or the real fold will be skipped.
 
-### Sampling settings
+### Sampling settings (#25)
 
-4 chains, 2,000 warmup, 5,000 post-warmup samples, `hmc(Lmin = 15, Lmax = 30)`,
-initialised from `temporary/inits.RDS`. Roughly 62 h per fold at four threads,
-two folds at a time.
+`dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
+`fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
+take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 60 to 120
+leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
+acceptance 0.65, 4 chains, 2,000 warmup and 3,000 samples. The model samples the
+countries' initial states centred and starts from `temporary/inits_refit.RDS`
+(`dynamical_inits_file`).
 
-Four chains rather than two because greta pools information across chains when
-adapting during warmup: at two chains the Kenya fold reached Rhat 7.6, and at
-four it reached 1.15. Chains cost super-linearly in this model (6.96, 15.21 and
-70.61 s per iteration at 2, 4 and 8 chains), and TensorFlow threads scale poorly
-beyond about four (8.39 s/iteration at 2 threads against 6.96 s using the whole
-machine), which is why the budget goes into concurrent folds rather than into
-threads.
+At four threads the 2014 forecasting fold took 3.7 h at 3.0 s per iteration
+(2,000 + 2,500, machine loaded to about 8 of 16 cores), so about 4.2 h at
+3,000 samples. The interpolation fold ran 1.5 times slower per iteration than
+the 2014 fold at 15-30 steps, so it should take about 6 h, and the full fit,
+now at the same settings, about as long. It was roughly 62 h per fold with
+the greta.dynamics loop.
 
-The September run reached this same 5,000 samples by taking 500 and topping up
+**Result.** On the 2014 forecasting fold, for the default model, against
+greta's `hmc()` with the non-centred hierarchy (on the interpolation fold, the
+only fold that baseline was run on):
+
+| | fold | draws | worst rank Rhat | params > 1.01 / > 1.05 | bulk ESS min / median |
+|---|---|---|---|---|---|
+| `hmc()`, non-centred, 15-30 steps | interpolation | 20,000 | 1.156 | 575 / 83 | 18 / 232 |
+| windowed, centred, 15-30 steps | 2014 | 20,000 | 1.049 | 207 / 0 | 104 / 600 |
+| **these settings** (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
+
+At 3,000 samples the minimum should reach about 430. These settings were not
+run on the interpolation fold, which mixed worse than the 2014 fold at every
+setting tried (at 15-30 steps, minimum ESS 33 against 104). The worst-mixing
+parameters are the countries' initial levels for type 7 (`init_country_level[,
+7]`, ESS 361-630) and `init_country_sd[7]` (586); on the interpolation fold at
+15-30 steps they were `mortality_floor`, the levels of countries with few data
+for a type, and the levels of all countries of types 2 and 3 together.
+
+**What limits mixing,** found from the posterior correlations, the principal
+components of the draws and the per-chain means, not tried blind:
+
+1. *greta's warmup.* `hmc()` sets the diagonal of the mass matrix between 10%
+   and 40% of warmup from every warmup draw so far, transient included. On the
+   interpolation fold its final `diag_sd` was 0.06 to 20 times the posterior
+   sd; on 20 independent normals with sds 0.01-100 it was 0.04 to 9.3 times,
+   with minimum ESS 14 of 4,000. `windowed_hmc()` estimates it in windows that
+   start afresh, as Stan does (0.94-1.07 times the true sds, minimum ESS 933),
+   pooled over chains.
+2. *The non-centred hierarchy on the initial state.* Most countries have data
+   for most types, which fixes each country's initial state, so the
+   non-centred deviations of all countries in a region move together against
+   their region's (correlations above 0.9, in the September fits too). The
+   countries' levels are now sampled directly, around their region's level at
+   the country's own mean initial-state covariates: an exact
+   reparameterisation (the log densities match up to the Jacobian to 1e-8,
+   and `R/check_dynamical_model.R` passes). Centring the deviations but not
+   `logit_init_mean` moved the ridge to `logit_init_mean` (rank Rhat 1.41);
+   centring the regions too put them in a funnel with `init_region_sd`, which
+   5 regions barely identify (a chain sat still for 2,000 iterations at
+   `init_region_sd` 0.06); levels at covariates of 0 traded off against the
+   covariates' coefficients (-0.6), since the covariates are standardised over
+   the whole mask and the data cells lie above its mean.
+3. *Trajectory length.* The step size adapts to the acceptance target, but
+   the number of leapfrog steps does not, and 15-30 steps were too few to
+   move along the directions that remain slow: the mortality floor against
+   the initial levels of many countries at once (correlations 0.4-0.5), the
+   levels of one type against its selection and initial-state coefficients,
+   and the levels of countries without data for a type, which in centred form
+   sit in a mild funnel with `init_country_sd`. None is a linear ridge a
+   reparameterisation removes exactly, and a dense mass matrix did not help.
+   60-120 steps cost 2.2 times as much per iteration as 15-30 on the 2014
+   fold and gave 7 times the minimum ESS per draw.
+
+**Pilots on the full folds** (4 chains, 2,000 + 5,000, 4 threads; ESS per
+core-hour is bulk ESS over threads times wall hours, warmup included; wall
+time varied with the machine's load, 8 to 20 of 16 cores):
+
+| run | fold | s/it | worst rank Rhat | > 1.05 | ESS min / median | per core-hour min / median |
+|---|---|---|---|---|---|---|
+| `hmc()`, non-centred | interp | 3.36 | 1.156 | 83 | 18 / 232 | 0.7 / 8.9 |
+| windowed, regions and countries centred as deviations | interp | 2.68 | 1.407 | 267 | 9 / 134 | 0.4 / 6.5 |
+| windowed, regions and countries centred as levels | 2014 | 1.20 | 1.233 | 480 | 14 / 164 | 1.5 / 17.6 |
+| windowed, countries centred | interp | 2.00 | 1.168 | 53 | 22 / 254 | 1.4 / 16.3 |
+| windowed, countries centred | 2014 | 1.19 | 1.059 | 7 | 56 / 539 | 6.0 / 58.2 |
+| same, dense mass matrix | 2014 | 1.16 | 1.163 | 134 | 19 / 188 | 2.1 / 20.8 |
+| + levels at the overall mean covariates | interp | 2.17 | 1.102 | 16 | 28 / 319 | 1.7 / 18.9 |
+| + levels at the overall mean covariates | 2014 | 1.20 | 1.050 | 0 | 68 / 596 | 7.3 / 64.1 |
+| + at each country's mean (**these settings**) | 2014 | 1.37 | 1.049 | 0 | 104 / 600 | 9.8 / 56.2 |
+| + step size per chain | interp | 1.97 | 1.118 | 25 | 33 / 250 | 2.1 / 16.3 |
+| + step size per chain | 2014 | 1.01 | 1.120 | 146 | 28 / 250 | 3.5 / 31.6 |
+| shared step, failed proposals as rejections | 2014 | 1.93 | 1.066 | 19 | 44 / 374 | 2.9 / 24.9 |
+| **60-120 steps** (2,000 + 2,500) | 2014 | 2.98 | 1.013 | 0 | 361 / 2,723 | 24.2 / 182.5 |
+
+The per-chain step size freed a chain that moved once in 1,000 draws among 8
+on the screening subset, but on the 2014 fold one chain then rejected 35% of
+its proposals while sampling; both it and the change to failed proposals were
+worse there, so the step size is adapted as `hmc()` does. Runs of one setting
+vary by about as much as some of these differences.
+
+**Chains, warmup and trajectory length,** screened on a smaller model: 12
+countries from all 5 regions, 7,053 assays, with the model restricted to them.
+(A subset of the data with all 46 countries in the model left whole regions
+without data, a geometry the folds do not have.) 2 threads, 4 chains and
+1,000 + 2,000 unless shown, 8,000 post-warmup draws in all:
+
+| | s/it | worst rank Rhat | > 1.05 | ESS min / median | per core-hour min / median |
+|---|---|---|---|---|---|
+| 4 chains (two runs) | 0.77-0.84 | 1.051-1.061 | 1-7 | 55-82 / 341-464 | 43-59 / 265-331 |
+| 4 chains, 2,500 warmup | 0.81 | 1.102 | 41 | 32 / 204 | 16 / 101 |
+| 8 chains, 1,000 + 1,000 | 1.46 | 1.077 | 14 | 73 / 386 | 45 / 237 |
+| 16 chains, 1,000 + 500 | 3.19 | 1.115 | 133 | 97 / 345 | 37 / 130 |
+| L 5-15 | 0.77 | 1.272 | 174 | 12 / 95 | 9 / 74 |
+| L 15-30 | 1.76 | 1.060 | 2 | 51 / 451 | 17 / 154 |
+| L 30-60 | 3.10 | 1.050 | 1 | 79 / 961 | 15 / 186 |
+| L 60-120 | 4.94 | 1.006 | 0 | 604 / 3,981 | 73 / 484 |
+| L 120-240, 1,000 + 1,000 | 7.74 | 1.010 | 0 | 189 / 2,371 | 22 / 276 |
+
+(The L runs ran together on a machine loaded to about 20 of 16 cores, so their
+s/it are comparable with each other but not with the rows above.) Neither more
+chains nor a longer warmup gave more effective samples per core-hour, and on
+the full interpolation fold chains cost at least proportionally: 2.95, 5.46
+and 15.14 s per iteration at 4, 8 and 16 chains (70 iterations, 4 threads).
+Trajectory length did: 60-120 steps gave 4 times the minimum ESS per
+core-hour of 15-30 on the subset, and 2.5 times on the 2014 fold; 120-240
+gave less. Cost per iteration grows less than linearly with the steps
+(overhead per iteration). Four chains rather than two because the metric is estimated from all
+chains pooled: at two chains, under `hmc()`, the Kenya fold reached Rhat 7.6.
+TensorFlow threads scale poorly beyond about four, which is why the budget
+goes into concurrent folds rather than threads.
+
+**Initial values.** `temporary/inits.RDS`, from the fits before the refit,
+has no `logit_init_mean`, which the centred levels need (it started wherever
+greta put it). `temporary/inits_refit.RDS` (not in git) holds the posterior
+means of the default model on the interpolation fold from the `hmc()` run
+above, before reversion was added (reversion starts at 0.01), and
+`fit_model.R` rewrites it from the full fit. From the old inits the four
+chains of that run agreed in their means: the stuck chains above came from
+the sampler and the funnels, not from the starting values.
+
+The September run reached 5,000 samples by taking 500 and topping up
 with `extra_samples()` towards a 1,000 ESS target. That target was set on the
 ~690 raw hierarchical parameters, whose minimum ESS was 76–96 on every fold, so
 it was never reachable and the cap always bound. The loop has been removed and
 the samples are asked for directly; the two are statistically equivalent, since
 `extra_samples()` continues the same chains without re-adapting.
+
+### Production run, October 2026
+
+The full fit and the five folds at the settings above, from frozen copies of
+`R/` (commit `ecad4ba`), 4 threads each, the full fit and three folds at once
+(16 threads, load 17-19 of 16 cores). Wall time includes prediction; the old
+inits file is kept as `temporary/inits_refit_before_production.RDS`, and
+`fit_model.R` rewrote `inits_refit.RDS` from this fit. Diagnostics over the
+raw parameters (733), rank-normalised (`posterior`):
+
+| fit | wall time | chains kept | worst rank Rhat | > 1.01 / > 1.05 | bulk ESS min / median | tail ESS min |
+|---|---|---|---|---|---|---|
+| full data | 20.3 h | 4 of 4 | 1.016 | 1 / 0 | 226 / 2,527 | 43 |
+| spatial blocks 1 | 16.7 h | 3 of 4 | 1.007 | 0 / 0 | 740 / 2,369 | 416 |
+| spatial blocks 2 | 17.7 h | 4 of 4 | 1.029 | 207 / 0 | 163 / 2,000 | 34 |
+| interpolation | 19.0 h | 4 of 4 | 1.008 | 0 / 0 | 513 / 2,370 | 377 |
+| forecasting 2014 | | | | | | |
+| forecasting 2018 | | | | | | |
+
+The full fit's worst parameter is `init_country_level[38, 6]`; blocks 2's are
+`sigma_overall[11]` and the class-level coefficients of column 11, with one
+chain's draws 20% repeated. The interpolation fold, which mixed worst at every
+setting before, is now among the best (minimum ESS on `mortality_floor`).
+
+One chain of blocks 1 repeated a single draw for all 3,000 samples (rank Rhat
+1.53 on every parameter with it). `R/drop_stuck_chains.R` drops such a chain
+from a fold's stored predictions and records it in `stuck_chains`, which
+`paired_draw_index()` reads; the fold then keeps 1,500 of its 2,000 stored
+draws. No other fit had a stuck chain (`stuck_chains()`: under half the draws
+distinct).
+
+Wall times are 3-4 times the pilots' estimate (4-6 h): with 16 threads on 8
+physical cores the four fits ran at 12-15 s per iteration each. Stopping two
+of the four for 7 minutes roughly doubled the other two's rate, so the
+machine has about 8 cores' worth of TensorFlow throughput, not 16.
+
+### Constrained refit, October 2026: two modes in the mortality floor
+
+The refit with the initial-state coefficients constrained to be at most 0
+(`12e51b4`) has two posterior modes: the mortality floor near 0.25-0.32 with
+more susceptible initial country levels, or near 0.001-0.002. In the full fit
+two chains found each; the low-floor chains had a log posterior about 59
+higher, and the other two were dropped (`DROP_CHAINS=1,2 Rscript
+R/drop_stuck_chains.R`; the original is kept as `draws_all_chains`, and in
+`temporary/fitted_model_raw_constrained.RData`). The folds and the half-length
+sensitivity fits (4 chains, 2,000 + 1,500), run on RunPod, checked the same
+way: per-chain means of every parameter, rank Rhat (`posterior`), and where
+chains disagree the log posterior per chain (60 draws each).
+
+| fit | floor per chain | chains kept | worst rank Rhat before / after |
+|---|---|---|---|
+| full data | 0.269, 0.269, 0.0015, 0.0016 | 3, 4 | 1.74 / 1.03 |
+| interpolation | 0.002 × 4 | all | 1.007 |
+| spatial blocks 1 | 0.246 × 4 | all | 1.005 |
+| spatial blocks 2 | 0.300 × 4 | all | 1.005 |
+| forecasting 2014 | 0.0014 × 4 | all | 1.004 |
+| forecasting 2018 | 0.0008 × 4 | all | 1.008 |
+| d_half 5 | 0.002 × 4 | all | 1.037 |
+| d_half 200 | 0.318 × 4 | all | 1.010 |
+| crop trend 0.37 | 0.002 × 4 | all | 1.020 |
+| crop and population trends 0.37 | 0.0012 × 4 | all | 1.023 |
+| net weight 0.47 | 0.272 × 4 | all | 1.015 |
+| legacy net use | 0.001 × 4 | all | 1.024 |
+| no reversion | 0.268, 0.268, 0.0015, 0.269 | 3 | 1.54 / 1.06 (split, one chain) |
+
+Without reversion the low-floor chain had a log posterior about 60 higher than
+the other three (−94,284 against −94,342 to −94,350), as in the full fit, so it
+alone is kept. Rhat after the drop is the split Rhat of that chain.
+
+Every other fit has all four chains in one mode, so no chain can be dropped,
+but five of them are in the high-floor mode: both block folds, d_half 200 and
+net weight 0.47. Whether that is the minor mode in those fits is not known.
+Evaluating each one's log posterior at the full fit's draws (which were not
+fitted to that data) put both of the full fit's modes 65-1,160 below the
+fit's own draws, and which of the two was higher varied: the low floor by 35
+(blocks 1) and 100 (net weight 0.47), the high floor by 30 (blocks 2) and 420
+(d_half 200). On the interpolation fold, a low-floor fit, the full fit's
+low-floor draws were 45-95 below its own and the high-floor ones 140-150
+below. So that check cannot settle it. The comparisons involving those fits — the block
+folds against the previous rounds, and those two sensitivities against the
+full fit — are partly a comparison between modes.
+
+### Sensitivity fits
+
+Each is the full fit with one change to `dynamical_model_options()`, at half
+length (4 chains, 2,000 warmup + 1,500 samples), in both the constrained refit
+and round 2 (floor Beta(1, 49)):
+
+| fit | options |
+|---|---|
+| d_half 5 | `dynamical_model_options(selection_columns = selection_design(pop_d_half = 5))` |
+| d_half 200 | `dynamical_model_options(selection_columns = selection_design(pop_d_half = 200))` |
+| crop trend 0.37 | `dynamical_model_options(selection_columns = selection_design(trend_crops = linear_trend_matrix(0.37)))` |
+| crop and population trends 0.37 | `dynamical_model_options(selection_columns = selection_design(trend_pop = linear_trend_matrix(0.37), trend_crops = linear_trend_matrix(0.37)))` |
+| net weight 0.47 | `dynamical_model_options(selection_columns = selection_design(net_w = 0.47))` |
+| legacy net use | `dynamical_model_options(selection_columns = selection_design(net_use_source = "legacy"))` |
+| no reversion | `dynamical_model_options(reversion = FALSE)` |
+
+`linear_trend_matrix(0.37)` (`R/model_covariates.R`) is g(t) = 0.37 in 1995
+rising linearly to 1 in 2025 and on, the same in every region: FAOSTAT
+insecticide use per ha of cropland in 1995 was about 1/2.7 of 2025's
+(`R/faostat_trend_model.R`; #23), where the main fit's trends start at 0.
 
 ## 4. What is being changed, and why
 
