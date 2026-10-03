@@ -9,7 +9,7 @@ source("R/functions.R")
 load(file = "temporary/fitted_model.RData")
 
 # load admin borders for plotting
-borders <- readRDS("data/clean/gadm_polys.RDS")
+borders <- readRDS("data/clean/country_borders.RDS")
 
 # set colours
 pyrethroid_blue <- "#56B1F7"

@@ -1,19 +1,14 @@
-# True country borders, for plotting, and an audit of the nearest-country fill.
+# Country borders for plotting, and an audit of the nearest-country fill.
 #
-# data/clean/gadm_polys.RDS is not a set of country borders. prep_admin.R
-# rasterises GADM onto the 5 km mask, fills every mask cell that no country
-# polygon covers with its nearest country, and then polygonises the raster
-# back. The fill is deliberate — the model needs a country for every cell it
-# predicts at — but the round trip leaves each filled offshore cell as a
-# detached one-cell "part" of whichever country was nearest. Kenya comes out of
-# it with 40 polygon parts, 36 of them more than 20 km from the mainland and
-# every one an exact whole number of mask cells; a chain of them sits 270 to
-# 290 km out in the Indian Ocean. Plotted, they read as bits of coastline
-# annexed from the neighbours.
+# These are the dissolved GADM polygons, restricted to the countries that
+# overlap the mask so that maps keep the mask's extent. They replace
+# data/clean/gadm_polys.RDS, which was prep_admin.R's country raster
+# polygonised back and so drew each filled offshore cell as a detached
+# one-cell part of whichever country it was given.
 #
-# So this writes the dissolved GADM geometry itself for plotting, and reports
-# how far the filled cells sit from the country they were given, since
-# predict.R:140 takes each prediction cell's country from the same raster.
+# The audit reports how far the cells of prep_admin.R's country raster sit from
+# the country they were given, since predict.R takes each prediction cell's
+# country from that raster (issue #15).
 
 source("R/packages.R")
 source("R/functions.R")
@@ -39,6 +34,12 @@ country_borders <- gadm %>%
   group_by(country_name, region) %>%
   summarise(.groups = "drop") %>%
   st_make_valid()
+
+# drop the countries with no mask cells (Cabo Verde, Mauritius, Réunion and
+# other Indian Ocean territories), as prep_admin.R does
+in_mask <- terra::extract(mask, vect(country_borders),
+                          fun = "mean", na.rm = TRUE)[, 2]
+country_borders <- country_borders[!is.na(in_mask), ]
 
 saveRDS(country_borders, "data/clean/country_borders.RDS")
 

@@ -265,7 +265,7 @@ cat(sprintf("the other %i countries (%i records) stay wholly in training\n",
 country_lookup_file <- "temporary/cell_country_lookup.RDS"
 if (!file.exists(country_lookup_file)) {
   stop("missing ", country_lookup_file,
-       "; build it with terra::rasterize of gadm_polys onto the mask")
+       "; build it with R/make_cell_country_lookup.R")
 }
 land <- readRDS(country_lookup_file) %>%
   filter(country_name %in% splittable$country_name[splittable$split])
@@ -440,13 +440,8 @@ if (identical(environment(), globalenv())) {
   # and then combined, rather than faceted: facet_wrap cannot give panels free
   # scales while coord_sf is in use.
   #
-  # Borders come from country_borders.RDS, the dissolved GADM geometry, not from
-  # gadm_polys.RDS. The latter is a rasterise-to-the-mask-and-polygonise-back
-  # round trip in which every mask cell no country covers was filled with its
-  # nearest country, so each filled offshore cell survives as a detached
-  # one-cell part of whichever country was nearest — Kenya picks up 36 such
-  # parts, some 290 km out in the Indian Ocean, and they plot as annexed
-  # coastline. See R/prep_country_borders.R.
+  # Borders come from country_borders.RDS, the dissolved GADM geometry. See
+  # R/prep_country_borders.R.
   borders <- readRDS("data/clean/country_borders.RDS")
   block_colours <- c("#1B7837", "#762A83", "#E08214", "#4393C3")[seq_len(n_blocks)]
   names(block_colours) <- as.character(seq_len(n_blocks))
