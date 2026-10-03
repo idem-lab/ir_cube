@@ -1,6 +1,9 @@
 # illustrate the inherent variability in biassay data at a set of locations with
 # high sampling density
 
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 

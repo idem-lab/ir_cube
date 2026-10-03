@@ -1,6 +1,9 @@
 # see how variability in bioassays data looks for resistant colony mosquitoes
 # against net samples (only brand new nets, to try to limit variability)
 
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 
