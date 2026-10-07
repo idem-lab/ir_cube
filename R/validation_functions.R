@@ -248,6 +248,14 @@ ppd_crps <- function(died, mosquito_number, sims) {
 # dividing by the known factor. Averaged over many assays the noise in that
 # estimate washes out.
 noise_floor_mse <- function(died, mosquito_number, rho) {
+  mean(noise_floor_record(died, mosquito_number, rho), na.rm = TRUE)
+}
+
+# The per-assay terms noise_floor_mse() averages: each is unbiased for that
+# assay's sampling variance but noisy (exactly 0 at 0% or 100%), so only means
+# over many assays are meaningful. NA for an assay that carries no information
+# about p(1 - p)
+noise_floor_record <- function(died, mosquito_number, rho) {
   yhat <- died / mosquito_number
   inflation <- (1 + (mosquito_number - 1) * rho) / mosquito_number
   # An assay of a single mosquito has inflation exactly 1, so the estimator
@@ -255,8 +263,71 @@ noise_floor_mse <- function(died, mosquito_number, rho) {
   # p(1 - p). Such assays are dropped from the floor rather than allowed to
   # make it undefined; there are a handful in the held-out data.
   usable <- mosquito_number > 1 & is.finite(inflation) & inflation < 1
+  out <- rep(NA_real_, length(yhat))
   pq <- pmax(yhat[usable] * (1 - yhat[usable]) / (1 - inflation[usable]), 0)
-  mean(pq * inflation[usable])
+  out[usable] <- pq * inflation[usable]
+  out
+}
+
+
+# the model floor -----------------------------------------------------------
+
+# The two-stage model (#21) treats u (per pixel-year) and p (per pixel) as
+# noise shared by the assays of a site: an assay at a pixel-year samples the
+# population mortality q = plogis(logit(m) + e), e ~ N(0, s^2), around the map
+# value m, with s^2 = tau^2 + sigma_p^2 from the fit. The model floor (#32) is
+# the squared error this adds to the map's, as the model attributes it:
+#
+#   U(m, s) = E[(q - m) ^ 2] = Var(q) + (E[q] - m) ^ 2
+#
+# The second term is the pull: E[q] lies nearer 0.5 than m, because the
+# inverse logit is applied after the noise. It is why the two-stage predictive
+# mean is not the map. Both moments are integrals over a normal, evaluated by
+# Gauss-Hermite quadrature (normal_quadrature()); the integrand is smooth and
+# bounded, and 40 nodes are exact to ~1e-10 for s up to 2.
+
+# Nodes and weights for E[f(e)], e ~ N(0, 1): the eigenvalues of the Jacobi
+# matrix of the probabilists' Hermite polynomials, and the squared first
+# components of its eigenvectors (Golub & Welsch 1969)
+normal_quadrature <- function(n_nodes = 40) {
+  jacobi <- matrix(0, n_nodes, n_nodes)
+  off <- sqrt(seq_len(n_nodes - 1))
+  jacobi[cbind(seq_len(n_nodes - 1), seq_len(n_nodes - 1) + 1)] <- off
+  jacobi[cbind(seq_len(n_nodes - 1) + 1, seq_len(n_nodes - 1))] <- off
+  decomposition <- eigen(jacobi, symmetric = TRUE)
+  list(nodes = decomposition$values,
+       weights = decomposition$vectors[1, ] ^ 2)
+}
+
+# E[q] - m and E[(q - m)^2] for q = plogis(qlogis(m) + e), e ~ N(0, sd^2),
+# elementwise over m and sd. m of exactly 0 or 1 gives q = m, both zero
+site_noise_moments <- function(map, sd, n_nodes = 40) {
+  stopifnot(length(sd) %in% c(1, length(map)))
+  rule <- normal_quadrature(n_nodes)
+  sd <- rep_len(sd, length(map))
+  deviation <- plogis(outer(qlogis(map), rep(1, n_nodes)) +
+                        outer(sd, rule$nodes)) - map
+  list(pull = drop(deviation %*% rule$weights),
+       mse = drop(deviation ^ 2 %*% rule$weights))
+}
+
+# the model floor U at each map value, for a level score: u and p both count
+model_floor_mse <- function(map, tau, sigma_p) {
+  site_noise_moments(map, sqrt(tau ^ 2 + sigma_p ^ 2))$mse
+}
+
+# The same for a change score between two assays at one pixel: p is shared
+# by the pair and cancels on the logit scale, so only u counts (sd tau), drawn
+# independently at each pixel-year. With d_j = q_j - m_j independent,
+#
+#   E[((q_2 - q_1) - (m_2 - m_1)) ^ 2] = E[d_1^2] + E[d_2^2] - 2 E[d_1] E[d_2]
+#
+# On the mortality scale p does not cancel exactly; it is left out as the
+# model's structure says. Divide by the squared gap for a per-year change
+model_floor_change_mse <- function(map_1, map_2, tau) {
+  first <- site_noise_moments(map_1, tau)
+  second <- site_noise_moments(map_2, tau)
+  first$mse + second$mse - 2 * first$pull * second$pull
 }
 
 # The same quantity for a pooled observed proportion: the irreducible variance

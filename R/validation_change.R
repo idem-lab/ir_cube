@@ -1,231 +1,210 @@
-# Score the forecasting experiment on the change in mortality, not the level.
+# The change panels of the main cross-validation figure (#36, D and E;
+# fig_variance_explained.R): skill against no change, for the change in
+# mortality between a pair of single bioassays at one pixel.
 #
-# With the training set leak fixed, the forecasting experiment is still
-# substantially a spatial test: most held-out site-years sit at sites with
-# training data one to three years earlier, so a local method gets the level
-# nearly free and the comparison is decided by local structure rather than by
-# trend. Scoring the change differences the site level out and leaves the local
-# slope, which is what the dynamical model claims to know (#12 review 5.1).
+# The target. At each forecasting origin (cuts 2014 and 2018), every pair of
+# one assay in the five-year window before the cut (in the fold's training
+# data) and one in the five-year holdout after it, at the same pixel and of the
+# same insecticide, at least min_gap years apart. Its change, and every
+# prediction of it, is divided by the years between its two assays: a rate per
+# year. Shorter gaps mostly measure assay noise. Each pixel-insecticide counts
+# once (its pairs share its weight), whichever origins it appears at.
 #
-# For each group g with data in both windows — a before window B of the same
-# length as the holdout, immediately preceding the cut, and the holdout window
-# H:
+# Scored as 100 (1 - sum w (P - A)^2 / sum w A^2), the skill against
+# predicting no change (R/validation_skill.R). The ceiling is the expected
+# score of the true change in population mortality given the pair's assay
+# noise; the local bar the expected score of an independent second pair at the
+# same pixel.
 #
-#   delta_obs(g)  = sum_H died / sum_H tested  -  sum_B died / sum_B tested
-#   delta_pred(g) = mean over draws of ( weighted mean of p over H
-#                                        - weighted mean of p over B )
+#   D  in sample  the full-data fit's maps at both assays' pixel-years
+#                 (outputs/full_fit_maps_at_assays.csv), which saw both
+#   E  forecast   each fold's maps: at the before assay, fitted to it; at the
+#                 holdout assay, forecast
 #
-# The target is a difference of two empirical proportions, with no model
-# assumptions in it. The baseline is "no change", which is what the nearest
-# neighbour null predicts by construction, so the nulls need no separate
-# treatment here.
+# D and E share their pairs, so the step from D to E changes only whether the
+# model saw the local data. E has no bioassay-based bar: no bioassay exists
+# yet in a forecast year.
 #
-# The floor is the sum of the two windows' irreducible variances, since the
-# windows are independent given the fractions; noise_floor_var_pooled() gives
-# each one.
+# Inputs: the dynamical forecasting folds (outputs/cv_draws, for the
+# before-window predictions p_draws_before), outputs/cv_scores.csv (the holdout
+# maps) and outputs/full_fit_maps_at_assays.csv. The two-stage model's map at
+# the before window is read from its fold (map_before, aligned with before_df)
+# where the fold has it; folds fitted before that was added do not, and its E
+# bar is then a placeholder.
 #
-# Run at two scales. Cell-insecticide is the most local and the thinnest, and
-# the floor handles that honestly. Country-insecticide pools many more assays,
-# so the floor falls and the comparison is almost purely about the population
-# fraction.
+# Replaces the change between pooled window means scored here before (#28).
+#
+# Writes outputs/cv_change_pairs.csv (one row per target pair) and
+# outputs/cv_change_skill.csv (the bars).
 
-source("R/validation_functions.R")
+source("R/validation_skill.R")
 
-suppressMessages({
-  library(dplyr)
-  library(tidyr)
-})
+set.seed(2026 - 10 - 6)
 
-# Every forecasting origin on disk, scored separately. The design is a rolling
-# origin — five-year windows cut at 2014 and 2018 — and the origins must not be
-# pooled: their holdout windows have true rates of decline differing by a factor
-# of two, which is the contrast the test is built on.
-fold_files <- sort(list.files(
-  "outputs/cv_draws",
-  pattern = "^dynamical__temporal_forecasting__.*\\.rds$",
-  full.names = TRUE
-))
-if (length(fold_files) == 0) {
-  stop("no forecasting folds in outputs/cv_draws")
-}
-# the superseded three-year 2020 origin leaked its cut year into the holdout
-stopifnot(!any(grepl("__2020\\.rds$", fold_files)))
+cuts <- c("2014", "2018")
+min_gap <- 3
 
 rho_source <- rho_lookup()
-cat("overdispersion:", rho_source$source, "\n")
+scores <- require_map_columns(read.csv("outputs/cv_scores.csv",
+                                   colClasses = c(fold = "character")))
 
-# thin to a common set of draws; the change is a smooth functional and does not
-# need twenty thousand of them
-max_draws <- 2000
-
-# the pooled observed proportion and the size-weighted mean of p, per group and
-# per window
-window_summary <- function(data, p_draws, group) {
-  index <- split(seq_len(nrow(data)), group)
-  weights <- data$mosquito_number
-  list(
-    groups = names(index),
-    died = vapply(index, function(i) sum(data$died[i]), numeric(1)),
-    tested = vapply(index, function(i) sum(weights[i]), numeric(1)),
-    assays = vapply(index, length, numeric(1)),
-    # n_draws x n_groups, the weighted mean of p in that window
-    p = vapply(index, function(i) {
-      as.numeric(p_draws[, i, drop = FALSE] %*% weights[i]) / sum(weights[i])
-    }, numeric(nrow(p_draws))),
-    insecticide_type = vapply(index,
-                              function(i) data$insecticide_type[i[1]],
-                              character(1)),
-    insecticide_class = vapply(index,
-                               function(i) data$insecticide_class[i[1]],
-                               character(1)),
-    # the assay sizes, kept so the floor can be computed per group
-    sizes = lapply(index, function(i) weights[i]),
-    counts = lapply(index, function(i) data$died[i])
-  )
+record_columns <- function(data) {
+  data %>%
+    transmute(cell, insecticide_type, year_start, died, mosquito_number)
 }
 
-score_scale <- function(scale, holdout, before, p_holdout, p_before) {
+# the assays of one origin's two windows, with each model's map at them
+window_assays <- function(cut) {
 
-  grouping <- function(data) {
-    switch(
-      scale,
-      cell = paste(data$cell, data$insecticide_type),
-      country = paste(data$country_name, data$insecticide_type)
-    )
+  fold_file <- function(model) {
+    file.path(draws_dir, sprintf("%s__temporal_forecasting__%s.rds", model,
+                                 cut))
+  }
+  dynamical <- readRDS(fold_file("dynamical"))
+  if (is.null(dynamical$p_draws_before)) {
+    stop(basename(fold_file("dynamical")), " carries no before-window ",
+         "predictions; it predates the change score and has to be refitted")
+  }
+  stopifnot(ncol(dynamical$p_draws_before) == nrow(dynamical$before_df))
+  before <- record_columns(dynamical$before_df) %>%
+    mutate(dynamical = colMeans(dynamical$p_draws_before))
+
+  # the holdout: the maps as scored (#32), on the fold's held-out records
+  holdout <- record_columns(dynamical$test_df)
+  for (model in c("dynamical", "two_stage")) {
+    rows <- scores %>%
+      filter(experiment == paste0("temporal_forecasting_", cut),
+             .data$model == !!model)
+    stopifnot(identical(record_key(rows), record_key(dynamical$test_df)))
+    holdout[[model]] <- rows$map
+  }
+  rm(dynamical)
+  invisible(gc())
+
+  two_stage <- readRDS(fold_file("two_stage"))
+  before$two_stage <- if (is.null(two_stage$map_before)) NA_real_ else {
+    stopifnot(identical(record_key(two_stage$before_df), record_key(before)))
+    two_stage$map_before
   }
 
-  h <- window_summary(holdout, p_holdout, grouping(holdout))
-  b <- window_summary(before, p_before, grouping(before))
-
-  shared <- intersect(h$groups, b$groups)
-  if (length(shared) == 0) {
-    return(NULL)
-  }
-  hi <- match(shared, h$groups)
-  bi <- match(shared, b$groups)
-
-  rho <- rho_for_record(
-    data.frame(insecticide_type = h$insecticide_type[hi],
-               insecticide_class = h$insecticide_class[hi]),
-    rho_source)
-
-  delta_observed <- h$died[hi] / h$tested[hi] - b$died[bi] / b$tested[bi]
-  delta_draws <- h$p[, hi, drop = FALSE] - b$p[, bi, drop = FALSE]
-  delta_predicted <- colMeans(delta_draws)
-
-  # the irreducible variance of the observed change: the two windows are
-  # independent given the fractions, so their variances add
-  floor_variance <- vapply(seq_along(shared), function(k) {
-    noise_floor_var_pooled(h$counts[[hi[k]]], h$sizes[[hi[k]]], rho[k]) +
-      noise_floor_var_pooled(b$counts[[bi[k]]], b$sizes[[bi[k]]], rho[k])
-  }, numeric(1))
-
-  data.frame(
-    scale = scale,
-    group = shared,
-    stringsAsFactors = FALSE,
-    insecticide_class = h$insecticide_class[hi],
-    assays_before = b$assays[bi],
-    assays_holdout = h$assays[hi],
-    delta_observed = delta_observed,
-    delta_predicted = delta_predicted,
-    delta_sd = apply(delta_draws, 2, sd),
-    floor_variance = floor_variance,
-    row.names = NULL
-  )
-
+  list(before = before, holdout = holdout)
 }
 
-# score one fitted forecasting fold at both scales
-score_fold <- function(fold_file) {
+windows <- lapply(setNames(cuts, cuts), window_assays)
 
-  fold <- readRDS(fold_file)
-  if (is.null(fold$p_draws_before)) {
-    warning(basename(fold_file), " carries no before-window predictions; it ",
-            "predates the change-based score and cannot be used for it ",
-            "without refitting. Skipping.")
-    return(NULL)
+# every pair of a before and a holdout assay at one pixel, of one insecticide
+pairs <- bind_rows(lapply(cuts, function(cut) {
+  inner_join(windows[[cut]]$before, windows[[cut]]$holdout,
+             by = c("cell", "insecticide_type"), suffix = c("_b", "_a"),
+             relationship = "many-to-many") %>%
+    mutate(cut = as.integer(cut), .before = 1)
+})) %>%
+  mutate(gap = year_start_a - year_start_b,
+         rate = (died_a / mosquito_number_a - died_b / mosquito_number_b) /
+           gap)
+
+n_all_gaps <- nrow(pairs)
+pairs <- pairs %>% filter(gap >= min_gap)
+
+# the data floor at rho-hat; an assay of one mosquito carries none
+rho_hat <- setNames(rho_source$table$rho, rho_source$table$key)
+pairs$floor <- pair_floor(pairs, rho_hat)
+pairs <- pairs %>% filter(!is.na(floor))
+
+# predicted rates: the fold's maps (E), and the full-data fit's (D)
+pairs <- pairs %>%
+  mutate(fold_dynamical = (dynamical_a - dynamical_b) / gap,
+         fold_two_stage = (two_stage_a - two_stage_b) / gap)
+
+full_fit_file <- "outputs/full_fit_maps_at_assays.csv"
+if (file.exists(full_fit_file)) {
+  full_fit <- read.csv(full_fit_file)
+  at <- function(year) {
+    tibble(cell = pairs$cell, insecticide_type = pairs$insecticide_type,
+           year_start = year) %>%
+      left_join(full_fit, by = c("cell", "year_start", "insecticide_type"),
+                relationship = "many-to-one")
   }
-
-  holdout <- fold$test_df
-  before <- fold$before_df
-  p_holdout <- fold$p_draws
-  p_before <- fold$p_draws_before
-  stopifnot(ncol(p_holdout) == nrow(holdout),
-            ncol(p_before) == nrow(before),
-            nrow(p_holdout) == nrow(p_before))
-
-  if (nrow(p_holdout) > max_draws) {
-    keep <- round(seq(1, nrow(p_holdout), length.out = max_draws))
-    p_holdout <- p_holdout[keep, , drop = FALSE]
-    p_before <- p_before[keep, , drop = FALSE]
+  full_b <- at(pairs$year_start_b)
+  full_a <- at(pairs$year_start_a)
+  pairs <- pairs %>%
+    mutate(full_dynamical = (full_a$dynamical - full_b$dynamical) / gap,
+           full_two_stage = (full_a$two_stage - full_b$two_stage) / gap)
+  # D and E have to share their pairs. In one run the full fit and the folds
+  # are made from the same data, and nothing is dropped here
+  missing <- is.na(pairs$full_dynamical) | is.na(pairs$full_two_stage)
+  if (any(missing)) {
+    warning(sum(missing), " of ", nrow(pairs), " pairs have no full-fit map ",
+            "at one of their assays' pixel-years and are dropped from D and E ",
+            "alike: ", full_fit_file, " is from different data than the folds")
+    pairs <- pairs[!missing, ]
   }
-
-  out <- bind_rows(lapply(c("cell", "country"), score_scale,
-                          holdout = holdout, before = before,
-                          p_holdout = p_holdout, p_before = p_before))
-  if (is.null(out) || nrow(out) == 0) {
-    return(NULL)
-  }
-
-  out %>%
-    mutate(experiment = fold$experiment,
-           cut_year = as.integer(sub("^temporal_forecasting_", "",
-                                     fold$experiment)),
-           holdout_years = paste(range(holdout$year_start), collapse = "-"),
-           before_years = paste(range(before$year_start), collapse = "-"),
-           .before = everything())
+} else {
+  warning("no ", full_fit_file, "; panel D's model bars are placeholders")
+  pairs <- pairs %>% mutate(full_dynamical = NA_real_,
+                            full_two_stage = NA_real_)
 }
 
-changes <- bind_rows(lapply(fold_files, score_fold))
-if (nrow(changes) == 0) {
-  stop("no forecasting fold carries before-window predictions")
-}
-changes <- changes %>% arrange(cut_year, scale)
-write.csv(changes, "outputs/cv_change.csv", row.names = FALSE)
+# each pixel-insecticide counts once
+pairs <- pairs %>%
+  group_by(cell, insecticide_type) %>%
+  mutate(w = 1 / n()) %>%
+  ungroup()
 
-# summarise: mean squared error of the predicted change against "no change",
-# both measured above the floor, and the sign test
-summary_table <- changes %>%
-  filter(!is.na(floor_variance)) %>%
-  group_by(cut_year, holdout_years, before_years, scale) %>%
-  summarise(
-    groups = n(),
-    assays = sum(assays_before + assays_holdout),
-    mean_observed_change = mean(delta_observed),
-    mean_predicted_change = mean(delta_predicted),
-    floor = mean(floor_variance),
-    mse_model = mean((delta_observed - delta_predicted) ^ 2),
-    mse_no_change = mean(delta_observed ^ 2),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    excess_model = mse_model - floor,
-    excess_no_change = mse_no_change - floor,
-    skill = mse_skill(mse_model, mse_no_change, floor)
-  )
+counts <- with(pairs, tibble(
+  n_pairs = length(gap),
+  pixel_insecticides = n_distinct(paste(cell, insecticide_type)),
+  pixels = n_distinct(cell),
+  median_gap = median(gap),
+  share_of_all_pairs = length(gap) / n_all_gaps))
+cat(sprintf(paste("%i pairs of single assays %i+ years apart (%.0f%% of all",
+                  "pairs) at %i pixel-insecticides in %i pixels; median gap",
+                  "%g years\n"),
+            counts$n_pairs, min_gap, 100 * counts$share_of_all_pairs,
+            counts$pixel_insecticides, counts$pixels, counts$median_gap))
 
-# direction of change, among groups whose observed change is larger than its
-# own noise standard deviation
-sign_table <- changes %>%
-  filter(!is.na(floor_variance),
-         abs(delta_observed) > sqrt(floor_variance)) %>%
-  group_by(cut_year, scale) %>%
-  summarise(
-    groups = n(),
-    correct_direction = mean(sign(delta_predicted) == sign(delta_observed)),
-    mean_absolute_observed = mean(abs(delta_observed)),
-    .groups = "drop"
-  )
+write.csv(pairs %>% select(cut, cell, insecticide_type, year_start_b,
+                           year_start_a, gap, died_b, mosquito_number_b,
+                           died_a, mosquito_number_a,
+                           rate, floor, w, starts_with("fold_"),
+                           starts_with("full_")),
+          "outputs/cv_change_pairs.csv", row.names = FALSE)
 
-write.csv(summary_table, "outputs/cv_change_summary.csv", row.names = FALSE)
-write.csv(sign_table, "outputs/cv_change_direction.csv", row.names = FALSE)
 
-cat("\nchange in mortality between the window before each cut and the",
-    "holdout window:\n")
-print(as.data.frame(summary_table %>%
-        mutate(across(where(is.numeric), ~ round(.x, 4)))))
+# the bars --------------------------------------------------------------------------
 
-cat("\ndirection of change, groups with an observed change above its noise:\n")
-print(as.data.frame(sign_table %>%
-        mutate(across(where(is.numeric), ~ round(.x, 3)))))
+predictions <- c("full_dynamical", "full_two_stage", "fold_dynamical",
+                 "fold_two_stage")
+summary <- bootstrap_summary(pairs, change_statistic(predictions),
+                             rho_replicates())
+
+two_stage_exact <- !anyNA(pairs$fold_two_stage) &&
+  all(scores$map_exact[grepl("^temporal_forecasting", scores$experiment) &
+                         scores$model == "two_stage"])
+
+change <- bind_rows(
+  summary %>%
+    filter(bar %in% c("ceiling", "local", "full_dynamical",
+                      "full_two_stage")) %>%
+    mutate(panel = "D", source = "full-data fit (outputs/two_stage/maps)"),
+  summary %>%
+    filter(bar %in% c("ceiling", "fold_dynamical", "fold_two_stage")) %>%
+    mutate(panel = "E", source = "temporal_forecasting 2014, 2018")
+) %>%
+  mutate(map_exact = ifelse(bar == "fold_two_stage", two_stage_exact, NA),
+         bar = sub("^(full|fold)_", "", bar),
+         # a bar with no estimate is a placeholder, and drawn as one
+         source = ifelse(is.na(estimate), "placeholder", source)) %>%
+  relocate(panel, source, .before = 1) %>%
+  bind_cols(counts)
+
+write.csv(change, "outputs/cv_change_skill.csv", row.names = FALSE)
+
+cat("\nskill against no change (%), pairs of single bioassays:\n")
+print(as.data.frame(change %>%
+  mutate(value = sprintf("%5.1f [%5.1f, %5.1f]", estimate, lower, upper)) %>%
+  select(panel, bar, value) %>%
+  pivot_wider(names_from = bar, values_from = value)), row.names = FALSE)
+
+
+# the local bar against actual second pairs ---------------------------------------

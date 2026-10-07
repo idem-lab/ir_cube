@@ -14,7 +14,8 @@
 # Per group of held-out records and model:
 #   elpd       mean beta-binomial log predictive density (higher is better)
 #   crps       mean CRPS on the mortality scale (lower is better)
-#   mse        mean squared error of the predictive mean (lower is better)
+#   mse        mean squared error of the map, the point prediction the maps
+#              show (#32; lower is better)
 #   cover50, cover95
 #              expected coverage of the central 50% and 95% predictive
 #              intervals over the PIT randomisation (expected_coverage())
@@ -32,8 +33,17 @@
 # move together in the bootstrap). By horizon: years ahead of the last training
 # year, per origin and pooled.
 #
-# Writes outputs/two_stage/cv_headline_two_stage.csv and
-# outputs/two_stage/cv_horizon_two_stage.csv.
+# And, for the two-stage model alone, what scoring the map rather than its
+# predictive mean changes (#32), per group: the bias of the map and of the
+# predictive mean (they differ by the pull towards 0.5), the MSE of each, the
+# data floor, the model floor U and its share of the remainder above the data
+# floor, and coverage with and without u and p. Coverage without them needs
+# the fold's map draws; where a fold has none (assembled before #32) it is NA
+# and n_map_exact says so.
+#
+# Writes outputs/two_stage/cv_headline_two_stage.csv,
+# outputs/two_stage/cv_horizon_two_stage.csv and
+# outputs/two_stage/cv_map_two_stage.csv.
 
 source("R/validation_scoring.R")
 
@@ -54,7 +64,7 @@ scores <- scores %>%
   mutate(horizon = ifelse(startsWith(experiment, "temporal_forecasting"),
                           year_start - suppressWarnings(as.integer(fold)) + 1,
                           NA),
-         squared_error = (observed - predicted) ^ 2,
+         squared_error = (observed - map) ^ 2,
          cover50 = expected_coverage(cdf_below, pmf_at, 0.5),
          cover95 = expected_coverage(cdf_below, pmf_at, 0.95))
 
@@ -147,6 +157,46 @@ write.csv(horizon, file.path(output_dir, "cv_horizon_two_stage.csv"),
           row.names = FALSE)
 
 
+# the map against the predictive mean, two-stage model only (#32) -----------
+
+# No bootstrap: these say what the switch to the map changes and how the
+# two-stage remainder splits, not whether the model beats another
+map_summary <- function(data) {
+  exact <- data %>% filter(map_exact)
+  remainder <- mean((data$observed - data$map) ^ 2) -
+    mean(data$floor, na.rm = TRUE)
+  tibble(
+    n = nrow(data),
+    n_map_exact = nrow(exact),
+    bias_map = mean(data$map - data$observed),
+    bias_predictive = mean(data$predicted - data$observed),
+    mean_pull = mean(data$predicted - data$map),
+    mse_map = mean((data$observed - data$map) ^ 2),
+    mse_predictive = mean((data$observed - data$predicted) ^ 2),
+    data_floor = mean(data$floor, na.rm = TRUE),
+    model_floor = mean(data$model_floor),
+    model_floor_share = model_floor / remainder,
+    cover50 = mean(data$cover50),
+    cover95 = mean(data$cover95),
+    cover50_map = if (nrow(exact) == 0) NA else
+      mean(expected_coverage(exact$cdf_below_map, exact$pmf_at_map, 0.5)),
+    cover95_map = if (nrow(exact) == 0) NA else
+      mean(expected_coverage(exact$cdf_below_map, exact$pmf_at_map, 0.95))
+  )
+}
+
+two_stage <- scores %>% filter(model == "two_stage")
+map_groups <- c(
+  split(two_stage, two_stage$experiment),
+  list(temporal_forecasting = two_stage %>%
+         filter(startsWith(experiment, "temporal_forecasting"))))
+map_table <- bind_rows(lapply(names(map_groups), function(name) {
+  map_summary(map_groups[[name]]) %>% mutate(experiment = name, .before = 1)
+}))
+write.csv(map_table, file.path(output_dir, "cv_map_two_stage.csv"),
+          row.names = FALSE)
+
+
 # report ------------------------------------------------------------------------------
 
 options(width = 200)
@@ -167,3 +217,7 @@ cat("two-stage model, and its difference from the dynamical model:\n")
 show(headline, experiment, fold)
 cat("\nby forecast horizon:\n")
 show(horizon, experiment, horizon)
+cat("\ntwo-stage model, scoring the map against its predictive mean (#32):\n")
+print(as.data.frame(map_table %>%
+                      mutate(across(where(is.double), ~ signif(.x, 3)))),
+      row.names = FALSE)

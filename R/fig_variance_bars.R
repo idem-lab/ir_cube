@@ -1,181 +1,153 @@
-# The bar encoding shared by every variance-explained figure.
+# The bar encoding shared by the cross-validation skill figures (#36).
 #
-# Each bar spans the full 100% of observed variance in the held-out quantity.
-# The bar is light grey, and the part bioassay sampling makes unexplainable is
-# washed out toward white from the top, so what remains grey is the predictable
-# part - the quantity the reader should be comparing against. The model's share
-# is filled in colour from the bottom.
+# Every bar has the same stack, from the bottom:
 #
-#   light grey, full height: observed variance out of sample
-#   washed to white from the top: the share attributable to bioassay sampling.
-#     Fully washed over the smallest that share could be, half washed over the
-#     95% interval, with a dashed rule at the resulting ceiling.
-#   colour from the bottom: what the model explains. Solid to the lower bound
-#     of its 95% interval, translucent to the upper, rule at the estimate.
-#   grey left uncovered: real variation in resistance available to be explained
-#     and not explained.
+#   colour   the score: the share of the target predicted. Solid to the lower
+#            bound of its 95% interval, translucent to the upper, with a rule
+#            at the estimate. Where the lower bound is below zero (change
+#            scores only), only the translucent interval and the rule are
+#            drawn, so no solid stub reads as the estimate
+#   grey     the remainder up to the ceiling: population mortality, or its
+#            change, not predicted
+#   dotted   the ceiling: the score of a perfect prediction of population
+#            mortality, short of 100 by the target's own bioassay noise
+#   white    the bioassay noise, above the ceiling: cannot be predicted
 #
 # Reading the interval as a translucent extension of the bar rather than as an
-# error bar keeps the quantities on one additive scale, so the grey gap is
-# always the shortfall. The wash is drawn over the model bars rather than under
-# them, so a model reaching past its ceiling is washed out too - the visual
-# signal that it is at the limit of what bioassay data can show.
+# error bar keeps the quantities on one additive scale, so the grey is always
+# the shortfall.
 #
-# Sourcing this file defines the colours, bar_layers(), region_key() and
+# Sourcing this file defines the colours, skill_bar_layers(), skill_key() and
 # base_theme; it draws nothing on its own.
 suppressMessages({
   library(dplyr)
   library(ggplot2)
 })
 
-# Blue for the mechanistic model and green for the baseline a person would
-# actually apply, which are the two the reader is asked to compare; the other
-# two models are greys so they read as reference rather than as competitors.
-# Magenta for the two-stage model (the dynamical model with a fitted spatial and
-# spatio-temporal correction), a hue no other model takes in any CV figure.
-model_colours <- c(
-  "dynamical model"         = "#2166AC",
-  "two-stage model"         = "#C51B7D",
-  "nearest recent survey"   = "#1B7837",
-  "nearest surveys, best k" = "#8073AC",
-  "insecticide mean"        = grey(0.45))
+# The bioassay-based bars take one green hue (OKLCH h = 150) at three
+# saturations, lightest for the most local. The models keep the colours of the
+# earlier figures: blue for the dynamical model, magenta for the two-stage
+# model.
+bar_colours <- c(
+  local = "#B6DDBD",
+  best_k = "#6FB07D",
+  nearest = "#137738",
+  dynamical = "#2166AC",
+  two_stage = "#C51B7D")
+bar_labels <- c(local = "local", best_k = "best K", nearest = "nearest",
+                dynamical = "dynamical", two_stage = "two-stage")
+bioassay_bars <- c("local", "best_k", "nearest")
 
-bar_background <- grey(0.88)
-wash_colour <- "white"
-wash_solid <- 0.82
-wash_interval <- 0.42
+noise_fill <- "#F7F7F7"
+remainder_fill <- "#DEDEDE"
+outline_colour <- grey(0.7)
+ceiling_colour <- grey(0.25)
+interval_alpha <- 0.45
 
-solid_alpha <- 1
-interval_alpha <- 0.35
+# The rule at the estimate: white on every bar but the lightest, where it
+# would vanish
+rule_colour <- function(bar) {
+  ifelse(bar == "local", bar_colours[["nearest"]], "white")
+}
 
-# one bar: the coloured base, its translucent interval, the rule at the point
-# estimate, and the noise block from the top
-bar_layers <- function(data, width = 0.8) {
+# One bar per row of `data`: position, bar (a name of bar_colours), estimate,
+# lower, upper, ceiling, and placeholder (TRUE where the estimate is not yet
+# available: drawn as a dashed outline up to the ceiling, labelled `note`)
+skill_bar_layers <- function(data, width = 0.8, note_size = 2.6) {
 
-  # A bar whose point estimate is below zero gets no colour at all. Clamping
-  # the rects at zero would otherwise draw an interval band with no rule in it,
-  # since the rule at the estimate falls off the axis - which reads as though
-  # the estimate were somewhere inside the band rather than below it. Plain
-  # grey says what is meant: the model explains none of the variance. The
-  # values are in outputs/cv_variance_explained_by_insecticide.csv.
-  models <- data %>% filter(kind == "model", is.finite(estimate), estimate > 0)
-  noise <- data %>% filter(kind == "noise")
+  data <- data %>%
+    mutate(xmin = position - width / 2, xmax = position + width / 2)
+  scored <- data %>% filter(!placeholder) %>%
+    mutate(solid_top = pmax(lower, 0),
+           rule = rule_colour(bar))
+  waiting <- data %>% filter(placeholder)
 
   list(
-    # the full bar: all the variance there is to explain
-    geom_rect(data = noise,
-              aes(xmin = position - width/2, xmax = position + width/2,
-                  ymin = 0, ymax = 100),
-              fill = bar_background, colour = NA),
-    # from the bottom: what the model explains
-    geom_rect(data = models,
-              aes(xmin = position - width/2, xmax = position + width/2,
-                  ymin = 0, ymax = pmax(lower, 0), fill = quantity),
-              alpha = solid_alpha, colour = NA),
-    geom_rect(data = models,
-              aes(xmin = position - width/2, xmax = position + width/2,
-                  ymin = pmax(lower, 0), ymax = upper, fill = quantity),
+    # the noise, above the ceiling
+    geom_rect(data = data,
+              aes(xmin = xmin, xmax = xmax, ymin = ceiling, ymax = 100),
+              fill = noise_fill, colour = NA),
+    # the remainder up to the ceiling
+    geom_rect(data = scored,
+              aes(xmin = xmin, xmax = xmax,
+                  ymin = pmin(pmax(upper, 0), ceiling), ymax = ceiling),
+              fill = remainder_fill, colour = NA),
+    geom_rect(data = waiting,
+              aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = ceiling),
+              fill = remainder_fill, colour = NA),
+    # the score: its interval translucent, solid to its nearer bound
+    geom_rect(data = scored,
+              aes(xmin = xmin, xmax = xmax, ymin = lower, ymax = upper,
+                  fill = bar),
               alpha = interval_alpha, colour = NA),
-    geom_segment(data = models,
-                 aes(x = position - width/2, xend = position + width/2,
-                     y = estimate, yend = estimate),
-                 colour = "white", linewidth = 0.5),
-    # washed toward white from the top, over everything below, so the
-    # unpredictable share recedes and anything reaching into it is washed too
-    geom_rect(data = noise,
-              aes(xmin = position - width/2, xmax = position + width/2,
-                  ymin = 100 - lower, ymax = 100),
-              fill = wash_colour, alpha = wash_solid, colour = NA),
-    geom_rect(data = noise,
-              aes(xmin = position - width/2, xmax = position + width/2,
-                  ymin = 100 - upper, ymax = 100 - lower),
-              fill = wash_colour, alpha = wash_interval, colour = NA),
-    # the ceiling: the most any model could explain
-    geom_segment(data = noise,
-                 aes(x = position - width/2, xend = position + width/2,
-                     y = 100 - estimate, yend = 100 - estimate),
-                 colour = grey(0.45), linewidth = 0.35, linetype = "22"),
-    # the bar outline last, so the 100% extent stays legible
-    geom_rect(data = noise,
-              aes(xmin = position - width/2, xmax = position + width/2,
-                  ymin = 0, ymax = 100),
-              fill = NA, colour = grey(0.7), linewidth = 0.3)
+    geom_rect(data = scored,
+              aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = solid_top,
+                  fill = bar),
+              colour = NA),
+    geom_segment(data = scored,
+                 aes(x = xmin, xend = xmax, y = estimate, yend = estimate,
+                     colour = rule),
+                 linewidth = 0.7),
+    # the ceiling
+    geom_segment(data = data,
+                 aes(x = xmin, xend = xmax, y = ceiling, yend = ceiling),
+                 colour = ceiling_colour, linetype = "dotted",
+                 linewidth = 0.45),
+    # the outline last, over the full extent of the bar
+    geom_rect(data = scored,
+              aes(xmin = xmin, xmax = xmax, ymin = pmin(lower, 0),
+                  ymax = 100),
+              fill = NA, colour = outline_colour, linewidth = 0.3),
+    geom_rect(data = waiting,
+              aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 100),
+              fill = NA, colour = grey(0.4), linewidth = 0.4,
+              linetype = "22"),
+    geom_text(data = waiting,
+              aes(x = position, y = ceiling / 2, label = note),
+              angle = 90, size = note_size, colour = grey(0.25),
+              lineheight = 0.9),
+    scale_fill_manual(values = bar_colours, guide = "none"),
+    scale_colour_identity()
   )
 }
 
-# The three regions labelled directly, as vertical bars in the space to the
-# right of the last bar group, so that the meaning of the heights is read off
-# the figure rather than from a caption. Drawn against a reference bar - the
-# dynamical model in that panel - because the boundaries differ between bars.
-region_key <- function(reference_estimate, reference_noise, x,
-                       label_size = 2.9, wrap = FALSE) {
-  ceiling_value <- 100 - reference_noise
-  # a label that is longer than the band it names overruns its own key line,
-  # so it is broken over two lines instead: that halves what it needs along
-  # the axis, at the cost of a wider column in the margin. Which ones need it
-  # depends on the panel height and on where the reference bar's boundaries
-  # fall, so it is set per figure; the noise band is the shortest in every
-  # figure, so that one is always broken.
-  wrap <- rep_len(wrap, 3)
-  wrap[3] <- TRUE
-  labels <- ifelse(wrap,
-                   sub(" ", "\n",
-                       c("explained variance", "unexplained variance",
-                         "bioassay noise")),
-                   c("explained variance", "unexplained variance",
-                     "bioassay noise"))
-  regions <- data.frame(
-    lower = c(0, reference_estimate, ceiling_value),
-    upper = c(reference_estimate, ceiling_value, 100),
-    label = labels,
-    colour = c("#2166AC", grey(0.45), grey(0.62)))
-  # each line runs the full height of its own region on the outer edge - 0%
-  # for the explained share, 100% for the noise share - and is trimmed only
-  # where it meets the next region, which is all the whitespace needed to read
-  # them as three regions rather than one continuous rule
-  gap <- 1.6
-  regions$from <- c(regions$lower[1], regions$lower[2:3] + gap)
-  regions$to <- c(regions$upper[1:2] - gap, regions$upper[3])
-  # each label is justified to its region's outer edge, the way the region
-  # itself is stacked: the explained share fills up from 0%, the noise share
-  # down from 100%, and the unexplained share is what is left in the middle
-  regions$anchor <- c(regions$from[1],
-                      mean(c(regions$from[2], regions$to[2])),
-                      regions$to[3])
-  regions$hjust <- c(1, 0.5, 0)
-  # every label sits the same distance off its line. vjust is a fraction of
-  # the label's own height, so a two-line label has to be given half the
-  # fraction to leave the same gap as a one-line one
-  n_lines <- lengths(regmatches(regions$label, gregexpr("\n", regions$label))) + 1
-  regions$vjust <- -0.55 / n_lines
-  list(
-    geom_segment(data = regions,
-                 aes(x = x, xend = x, y = from, yend = to),
-                 colour = regions$colour, linewidth = 0.9,
-                 inherit.aes = FALSE),
-    # set along the lines rather than beside them, so the key needs only a
-    # line's width of margin. At angle 270 the text reads downward and its own
-    # "up" direction points right, so vjust clears it of the line in units of
-    # its own height - which, unlike an offset in data units, does not have to
-    # be retuned for every panel width.
-    geom_text(data = regions,
-              aes(x = x, y = anchor, label = label, hjust = hjust,
-                  vjust = vjust),
-              angle = 270, size = label_size,
-              lineheight = 0.9, colour = regions$colour, inherit.aes = FALSE)
-  )
+# The one key: the bar parts only, as a ggplot of its own to set beside or
+# below the panels. `swatch_bar` gives the colour of the score's swatch
+skill_key <- function(swatch_bar = "two_stage", text_size = 3.1) {
+  swatch <- function(y, ...) {
+    annotate("rect", xmin = 0, xmax = 0.45, ymin = y - 0.3, ymax = y + 0.3,
+             ...)
+  }
+  label <- function(y, text) {
+    annotate("text", x = 0.7, y = y, label = text, hjust = 0,
+             size = text_size, lineheight = 0.9)
+  }
+  ggplot() +
+    swatch(4, fill = noise_fill, colour = outline_colour, linewidth = 0.3) +
+    label(4, "bioassay noise: cannot be predicted") +
+    annotate("segment", x = 0, xend = 0.45, y = 3, yend = 3,
+             colour = ceiling_colour, linetype = "dotted", linewidth = 0.55) +
+    label(3, "population mortality predicted perfectly") +
+    swatch(2, fill = remainder_fill, colour = outline_colour,
+           linewidth = 0.3) +
+    label(2, "population mortality not predicted") +
+    annotate("rect", xmin = 0, xmax = 0.45, ymin = 0.7, ymax = 1,
+             fill = bar_colours[[swatch_bar]]) +
+    annotate("rect", xmin = 0, xmax = 0.45, ymin = 1, ymax = 1.3,
+             fill = bar_colours[[swatch_bar]], alpha = interval_alpha) +
+    annotate("segment", x = 0, xend = 0.45, y = 1, yend = 1,
+             colour = "white", linewidth = 0.8) +
+    label(1, "population mortality predicted\n(estimate and 95% interval)") +
+    coord_cartesian(xlim = c(-0.3, 7), ylim = c(-0.6, 5.4), clip = "off") +
+    theme_void()
 }
 
-base_theme <- theme_minimal(base_size = 11) +
+base_theme <- theme_minimal(base_size = 10) +
   theme(panel.grid.major.x = element_blank(),
         panel.grid.minor = element_blank(),
-        axis.text.x = element_text(size = 9),
+        panel.grid.major.y = element_line(colour = grey(0.93)),
+        axis.text.x = element_text(size = 7.8),
         legend.position = "none",
-        # flush with the panel edge, so the label starts at the first bar
-        strip.text = element_text(face = "bold", hjust = 0,
-                                  margin = margin(b = 5, l = 0)),
-        panel.spacing.y = unit(14, "pt"),
-        # the key is drawn past the right edge of the last panel, with
-        # clipping off, so the margin has to carry it
-        plot.margin = margin(6, 44, 6, 6))
-
+        strip.text = element_text(face = "bold", hjust = 0, size = 10,
+                                  margin = margin(b = 4, l = 0)),
+        plot.margin = margin(4, 6, 4, 6))

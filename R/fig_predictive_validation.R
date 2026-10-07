@@ -119,7 +119,7 @@ reliability_plot <- reliability %>%
   coord_equal() +
   guides(colour = "none") +
   labs(
-    x = "predicted mortality",
+    x = "predicted mortality (map)",
     y = "observed mortality",
     subtitle = "When the model predicts a mortality, is that the average outcome? Grey band is the scatter a correct model would still show"
   ) +
@@ -145,7 +145,10 @@ ggsave("figures/CV_predictive_calibration.png",
 # the table ----------------------------------------------------------------
 
 # one row per experiment and model, with the column glosses that belong in the
-# caption rather than the header
+# caption rather than the header. MSE and bias score the map (#32). The
+# two-stage model's floor (u + p) is the part of its excess it attributes to
+# its site noise, and its coverage without u and p is NA until its folds carry
+# map draws
 table_out <- summaries %>%
   tidy_labels() %>%
   transmute(
@@ -153,11 +156,14 @@ table_out <- summaries %>%
     model,
     `held-out bioassays` = n,
     `95% interval coverage` = round(coverage_95, 3),
+    `95% coverage without u, p` = round(coverage_95_map, 3),
     `mean PIT` = round(mean_pit, 3),
     `CRPS (mortality)` = round(crps, 4),
     `MSE` = round(mse, 4),
     `bioassay noise floor` = round(mse_floor, 4),
     `MSE above the floor` = round(excess, 4),
+    `model floor (u + p)` = round(model_floor, 4),
+    `bias` = round(bias, 3),
     `RMS error in the fraction` = round(rms_p, 3),
     `Cramer-von Mises` = round(cvm, 2)
   ) %>%

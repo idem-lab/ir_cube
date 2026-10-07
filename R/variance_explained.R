@@ -20,6 +20,15 @@
 #   ceiling = 100 - noise
 #       the most any model could explain.
 #
+#   model floor = 100 U / Var(y)
+#       for the two-stage model only, the part of its remainder below the
+#       ceiling that it attributes to its site noise u and p (#32;
+#       model_floor_mse() in validation_functions.R). The rest is the map's
+#       own error.
+#
+# MSE is the map's (#32): every model's point prediction as the maps show it,
+# from outputs/cv_scores.csv, so R/validation_metrics.R runs first.
+#
 # The floor is the sampling variance of the observed proportion, p(1-p) k_i,
 # with k_i = (1 + (m_i - 1) rho_t) / m_i the beta-binomial design effect over
 # the assay size, and it is noise_floor_mse() from validation_functions.R - the
@@ -96,23 +105,37 @@ cat("overdispersion used for the noise share:", rho_spec$source, "\n")
 
 # assemble the held-out records, with one prediction column per model ---------
 
-# predictions are matched on the record (record_key(), in validation_scoring.R).
-# Each fold file is read once, keeping its held-out records and the posterior
-# mean predictions. Every model must describe the reference's records (the
+# The predictions are each model's map (#32): the point prediction
+# validation_metrics.R writes to outputs/cv_scores.csv as `map`, which for the
+# two-stage model leaves out its site noise u and p and for every other model
+# is its predictive mean. Read from there rather than from the saved folds,
+# which take 4-8 GB each to load, so run validation_metrics.R first. It is the
+# mean of the thinned draws every other score uses (thin_draws()), where the
+# folds' means used all of them: on the September folds that moved the
+# dynamical model's pooled spatial scores by at most 0.002 points.
+#
+# Predictions are matched on the record (record_key(), in
+# validation_scoring.R). Every model must describe the reference's records (the
 # dynamical model's), in the same order. They do, being built from one fold
 # definition, but nothing else enforces it and a silent misalignment would swap
 # predictions between assays (#12 review)
+scores <- read.csv("outputs/cv_scores.csv", colClasses = c(fold = "character"))
+stopifnot(all(c("map", "map_exact", "model_floor") %in% names(scores)))
+
 read_fold <- function(model, experiment, fold, reference = NULL) {
-  file <- file.path(draws_dir, sprintf("%s__%s__%s.rds", model, experiment, fold))
-  stopifnot(file.exists(file))
-  x <- readRDS(file)
-  stopifnot(ncol(x$p_draws) == nrow(x$test_df),
+  # the forecasting folds are scored under one experiment per origin
+  label <- if (experiment == "temporal_forecasting") {
+    paste(experiment, fold, sep = "_")
+  } else {
+    experiment
+  }
+  x <- scores[scores$model == model & scores$experiment == label &
+                scores$fold == fold, ]
+  stopifnot(nrow(x) > 0,
             is.null(reference) ||
-              identical(record_key(x$test_df), record_key(reference)))
-  out <- list(test_df = x$test_df, predicted = colMeans(x$p_draws))
-  rm(x)
-  invisible(gc())
-  out
+              identical(record_key(x), record_key(reference)))
+  list(test_df = x, predicted = x$map, model_floor = x$model_floor,
+       map_exact = x$map_exact)
 }
 
 records <- bind_rows(lapply(experiments, function(spec) {
@@ -120,8 +143,10 @@ records <- bind_rows(lapply(experiments, function(spec) {
 
     dynamical <- read_fold("dynamical", spec$experiment, fold)
     reference <- dynamical$test_df
+    two_stage <- read_fold("two_stage", spec$experiment, fold, reference)
     predictions <- lapply(setNames(names(models), names(models)), function(m) {
       if (m == "dynamical") return(dynamical$predicted)
+      if (m == "two_stage") return(two_stage$predicted)
       read_fold(m, spec$experiment, fold, reference)$predicted
     })
 
@@ -131,7 +156,10 @@ records <- bind_rows(lapply(experiments, function(spec) {
                 died, mosquito_number,
                 observed = died / mosquito_number) %>%
       bind_cols(as_tibble(setNames(predictions,
-                                   paste0("p_", names(predictions)))))
+                                   paste0("p_", names(predictions))))) %>%
+      # the two-stage model's floor U and whether its map is exact
+      mutate(model_floor = two_stage$model_floor,
+             map_exact = two_stage$map_exact)
   }))
 }))
 
@@ -167,11 +195,14 @@ cat(sprintf("%i held-out records across %i experiments\n",
 # version 1.4 to 9.6% high depending on rho, and it is the more fragile of the
 # two where p is bimodal, as it is for DDT and Alpha-cypermethrin (#12 review).
 
+# with, last, the two-stage model's floor U as a share of the same variance
+# (#32), so that it is resampled with the scores
 explained_for <- function(data) {
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
-  vapply(prediction_columns, function(column) {
+  c(vapply(prediction_columns, function(column) {
     100 * (1 - mean((data$observed - data[[column]]) ^ 2) / variance)
-  }, numeric(1))
+  }, numeric(1)),
+  model_floor = 100 * mean(data$model_floor) / variance)
 }
 
 # Posterior draws of the noise share, propagating rho only: this carries the
@@ -230,7 +261,20 @@ summarise_subset <- function(data, label, stratum = NA_character_) {
     })),
     data.frame(quantity = "bioassay variability", kind = "noise",
                estimate = noise_point,
-               lower = quantile(noise, 0.025), upper = quantile(noise, 0.975))
+               lower = quantile(noise, 0.025), upper = quantile(noise, 0.975)),
+    # The two-stage model's floor (#32): the share of observed variance it
+    # attributes to its site noise u and p, part of its remainder above the
+    # noise share, as the model attributes it rather than as measured. In the
+    # tables only, not the bar figure (#36). Its interval is the pixel
+    # bootstrap's, with tau and sigma_p held at their fitted values. The share
+    # of records whose map is exact (map_exact) says whether U was taken at
+    # the map or at the predictive mean
+    data.frame(quantity = "two-stage model floor (u + p)",
+               kind = "model floor",
+               estimate = point[["model_floor"]],
+               lower = quantile(replicates[, "model_floor"], 0.025),
+               upper = quantile(replicates[, "model_floor"], 0.975),
+               share_map_exact = mean(data$map_exact))
   ) %>%
     mutate(experiment = label, stratum = stratum,
            assays = nrow(data), pixels = n_distinct(data$cell),

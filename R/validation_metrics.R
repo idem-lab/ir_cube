@@ -21,6 +21,12 @@
 # Cramer-von Mises statistic assumed independent PIT values, which does not hold
 # for records scored against a shared posterior (#12 review).
 #
+# Point metrics (MSE, excess, bias, reliability bins, pooled means) score the
+# map, the point prediction a reader would take from the published maps:
+# for the two-stage model the posterior mean without its site noise u and p,
+# for every other model its predictive mean (#32; score_fold()). The
+# distributional metrics score each model's own predictive distribution.
+#
 # Every model is scored at the same overdispersion, the external
 # replicate-based estimate, rather than at its own fitted value. Letting each
 # model choose made coverage a comparison of dispersion rather than of
@@ -103,11 +109,16 @@ summaries <- bind_rows(summaries)
 # noise floor in absolute mortality-squared units, so the conclusion does not
 # rest entirely on the floor. `rms_p` is its square root, an error in the
 # population fraction itself.
+#
+# The two-stage model also attributes part of its excess to its site noise u
+# and p: `model_floor`, the model floor U (#32), labelled as attributed by the
+# model; `map_error` is the rest, the map's own error. NA for the other models
 summaries <- summaries %>%
   group_by(experiment) %>%
   mutate(
     excess = mse - mse_floor,
-    rms_p = sqrt(pmax(excess, 0))
+    rms_p = sqrt(pmax(excess, 0)),
+    map_error = excess - model_floor
   ) %>%
   ungroup()
 
@@ -115,8 +126,9 @@ write.csv(summaries, "outputs/cv_summary.csv", row.names = FALSE)
 
 cat("\nsummary by experiment and model:\n")
 print(summaries %>%
-        select(experiment, model, n, coverage_95, mean_pit, crps, mse,
-               mse_floor, excess, rms_p, cvm) %>%
+        select(experiment, model, n, coverage_95, coverage_95_map, mean_pit,
+               crps, bias, bias_predictive, mse, mse_floor, excess,
+               model_floor, rms_p, cvm) %>%
         mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
         as.data.frame())
 
@@ -144,22 +156,24 @@ write.csv(coverage_curves, "outputs/cv_coverage.csv", row.names = FALSE)
 
 # reliability --------------------------------------------------------------
 
-# Binned on the prediction, never on the observation. Binning on the observed
+# Binned on the map (score_fold()), never on the observation. Binning on the observed
 # mortality induces regression to the mean and makes a calibrated model look
 # badly biased at both extremes; conditioning on the prediction is the question
 # actually of interest — when the model says 60%, is the average outcome 60%.
 #
 # The envelope comes from the model's own posterior predictive distribution, so
-# a gap outside it is the model's error rather than the diagnostic's. That
+# a gap outside it is the model's error rather than the diagnostic's; for the
+# two-stage model that includes its fresh u and p, so the envelope is centred
+# off the map by the pull towards 0.5. That
 # requires the posterior draws, so it is computed per fold and then pooled by
 # experiment, weighting each fold by its held-out records.
 reliability <- all_scores %>%
   group_by(model, experiment) %>%
-  group_modify(~ reliability_bins(.x$predicted, .x$observed, n_bins = 10)) %>%
+  group_modify(~ reliability_bins(.x$map, .x$observed, n_bins = 10)) %>%
   ungroup()
 
 reliability_checks <- bind_rows(lapply(scored, function(entry) {
-  bins <- reliability_bins(colMeans(entry$p_draws),
+  bins <- reliability_bins(entry$scores$map,
                            entry$scores$observed,
                            n_bins = 10)
   with_fold_stream(entry$fold$file, "reliability", bind_cols(
@@ -167,7 +181,7 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
                experiment = entry$fold$experiment,
                fold = entry$fold$fold),
     bins,
-    reliability_ppc(predicted = colMeans(entry$p_draws),
+    reliability_ppc(predicted = entry$scores$map,
                     mosquito_number = entry$scores$mosquito_number,
                     p_draws = entry$p_draws,
                     rho = entry$rho_scoring,
@@ -226,8 +240,10 @@ aggregate_summary <- aggregated %>%
     mean_assays = mean(n_assays),
     coverage_95 = mean(observed >= lower & observed <= upper),
     mean_pit = mean(pit),
-    bias = mean(predicted - observed),
-    rmse = rmse(observed, predicted),
+    # the pooled map; the predictive mean's bias alongside
+    bias = mean(map - observed),
+    bias_predictive = mean(predicted - observed),
+    rmse = rmse(observed, map),
     .groups = "drop"
   )
 
@@ -294,6 +310,22 @@ print(rho_comparison %>%
         as.data.frame())
 
 
+# the data floor, checked directly ------------------------------------------
+
+# The floor every score uses is noise_floor_mse() at the external rho. On the
+# held-out pixel-years with replicate assays it can be checked against the
+# replicates' own differences, which need no rho (floor_pair_check(), #32).
+# A ratio near 1 supports the floor; the replicated subset need not be
+# representative of all held-out assays (share_replicated, rho_floor_all)
+floor_check <- floor_pair_check(all_scores %>% filter(model == "dynamical"))
+write.csv(floor_check, "outputs/cv_floor_pair_check.csv", row.names = FALSE)
+
+cat("\ndata floor: replicate pairs against rho, same held-out assays:\n")
+print(floor_check %>%
+        mutate(across(where(is.double), ~ round(.x, 4))) %>%
+        as.data.frame())
+
+
 # per fold and per year ----------------------------------------------------
 
 # The pooled numbers hide which folds carry the result, and master reported a
@@ -309,7 +341,8 @@ write.csv(by_fold, "outputs/cv_by_fold.csv", row.names = FALSE)
 
 cat("\nby fold:\n")
 print(by_fold %>%
-        select(experiment, fold, model, n, bias, coverage_95, excess) %>%
+        select(experiment, fold, model, n, bias, coverage_95, excess,
+               model_floor) %>%
         mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
         as.data.frame())
 
