@@ -113,10 +113,7 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
   n_draws <- nrow(v[[1]])
   out <- NULL
   for (i in seq_len(n_draws)) {
-    v_i <- lapply(v, function(a) {
-      d <- dim(a)[-1]
-      array(a[i + (seq_len(prod(d)) - 1) * nrow(a)], d)
-    })
+    v_i <- variables_at_draw(v, i)
     terms_i <- dynamical_terms(v_i, classes_index = classes_index,
                                types = types, options = options)[terms]
     if (is.null(out)) {

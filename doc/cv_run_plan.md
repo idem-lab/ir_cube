@@ -100,11 +100,42 @@ afterwards, or the real fold will be skipped.
 
 `dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
 `fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
-take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 60 to 120
+take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 30 to 60
 leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
-acceptance 0.65, 4 chains, 2,000 warmup and 3,000 samples. The model samples the
+acceptance 0.65, 4 chains, 2,000 warmup and 1,500 samples. The model samples the
 countries' initial states centred and starts from `temporary/inits_refit.RDS`
 (`dynamical_inits_file`).
+
+**Centred selection hierarchy (#48).** Since #48 the model also samples the
+class and type levels of the net use, IRS and population selection effects,
+and the type level of the overdispersion, centred
+(`centred_options_data_informed()`), which the data pin down; the crop
+effects stay non-centred. The steps were 60 to 120 before. Full fits of the
+default model (d_half 270, no floor) on the full data, the same data and
+initial values, 4 chains, 2,000 + 3,000, 8 vCPU RunPod pods (cpu5c, except
+cpu3c at 62 ms per gradient for 15-30); ESS per 1,000 gradients counts the
+sampling iterations at the mean number of steps:
+
+| hierarchy, steps | hours | worst rank Rhat | bulk ESS min / median | per 1,000 gradients min / median |
+|---|---|---|---|---|
+| non-centred, 60-120 | 6.18 | 1.01 | 400 / 1,999 | 1.48 / 7.41 |
+| centred, 15-30 | 1.93 | 1.01 | 514 / 2,657 | 7.62 / 39.4 |
+| **centred, 30-60** (these settings) | 3.00 | 1.00 | 1,208 / 7,217 | 8.95 / 53.5 |
+
+The centred fits' posterior means of the 683 quantities all three share
+(`R/centred_pilot.R`) differ from the non-centred fit's by a median 0.7
+Monte Carlo standard errors (at most 3.8) and their sds by a median ratio
+of 1.00. The worst-mixing quantity in all three is `sigma_class` for net use:
+it is set by the type deviations the data barely inform (the
+organophosphates, and bendiocarb and DDT alone in their classes), which
+centred sit in a mild funnel with it.
+
+At 30-60 steps the worst quantity had 0.40 effective samples per draw, so
+1,500 samples (3,000 before #48) should give a minimum bulk ESS of about 600.
+The warmup stays at 2,000: at 1,000 (+ 1,500, the same pod type), one of the
+four chains ended warmup in that funnel's neck (`sigma_class` for net use at
+0.13, against a posterior median of 0.27) and rejected every proposal while
+sampling, at the step size the other chains adapted (rank Rhat up to 4.6).
 
 At four threads the 2014 forecasting fold took 3.7 h at 3.0 s per iteration
 (2,000 + 2,500, machine loaded to about 8 of 16 cores), so about 4.2 h at

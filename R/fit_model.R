@@ -95,11 +95,16 @@ settings <- eval(str2lang(Sys.getenv("IR_CUBE_MCMC_SETTINGS",
 inits <- dynamical_chain_inits(dynamical_inits_files(), built$variables,
                                levels = built$lookups$levels,
                                columns = colnames(x_cell_years),
-                               n_chains = settings$n_chains)
+                               n_chains = settings$n_chains,
+                               options = model_options,
+                               classes_index = classes_index)
 
-system.time(
+# the time is kept in the saved image, to compare runs on effective samples
+# per hour (R/centred_pilot.R)
+sampling_time <- system.time(
   draws <- run_dynamical_mcmc(m, built$variables, inits, settings)
 )
+sampling_time
 
 # check convergence
 rhats <- coda::gelman.diag(draws,
@@ -120,6 +125,10 @@ save.image(file = "temporary/fitted_model.RData")
 # nodes (not operation nodes)
 posts <- do.call(calculate,
                  c(built$variables, list(values = draws, nsim = 100)))
+# those of the non-centred model, if some levels were centred: the cache is
+# always in the non-centred variables, which dynamical_inits() moves to any
+# model's
+posts <- noncentred_draws(posts, classes_index, model_options)
 
 post_means <- lapply(posts,
                      function(x) {

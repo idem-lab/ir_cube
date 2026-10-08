@@ -44,7 +44,9 @@ fit_fold <- function(train_df,
   inits <- dynamical_chain_inits(inits_file, built$variables,
                                  levels = built$lookups$levels,
                                  columns = colnames(x_cell_years),
-                                 n_chains = settings$n_chains)
+                                 n_chains = settings$n_chains,
+                                 options = built$options,
+                                 classes_index = classes_index)
   draws <- run_dynamical_mcmc(built$model, built$variables, inits,
                               settings)
 

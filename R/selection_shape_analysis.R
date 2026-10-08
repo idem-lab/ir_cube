@@ -270,37 +270,32 @@ load("temporary/fitted_model.RData", envir = fitted)
 stopifnot(identical(fitted$types, types),
           identical(fitted$classes_index, classes_index),
           identical(colnames(fitted$x_cell_years), colnames(x_cell_years)))
-draws_mat <- as.matrix(fitted$draws)
-draws_mat <- draws_mat[round(seq(1, nrow(draws_mat), length.out = 500)), ]
-draw_array <- function(name, dim) {
-  cols <- grep(paste0("^", name, "\\["), colnames(draws_mat))
-  array(draws_mat[, cols], c(nrow(draws_mat), dim))
-}
+# the selection effects of 500 draws, from the fit's variables in whichever
+# parameterisation it sampled (dynamical_parameter_draws())
+source("R/dynamical_predictions.R")
+fold <- list(draws = fitted$draws, options = fitted$model_options)
+n_total <- nrow(as.matrix(fitted$draws))
+parameters <- dynamical_parameter_draws(
+  fold, classes_index, types,
+  draw_index = round(seq(1, n_total, length.out = 500)))
+n_draws <- parameters$n_draws
 n_covs <- ncol(x_cell_years)
-n_classes <- length(classes)
 n_types <- length(types)
-beta_overall <- draw_array("beta_overall", n_covs)
-sigma_overall <- draw_array("sigma_overall", n_covs)
-sigma_class <- draw_array("sigma_class", n_covs)
-beta_class_raw <- draw_array("beta_class_raw", c(n_covs, n_classes))
-beta_type_raw <- draw_array("beta_type_raw", c(n_covs, n_types))
 
 x_pair_years <- as.matrix(pair_years[, colnames(x_cell_years)])
 pair_type <- pairs$type_id[pair_years$pair_id]
-model_rate <- matrix(NA, nrow(draws_mat), nrow(pairs))
+model_rate <- matrix(NA, n_draws, nrow(pairs))
 model_effect <- matrix(0, n_covs, n_types,
                        dimnames = list(colnames(x_cell_years), types))
-for (s in seq_len(nrow(draws_mat))) {
-  beta_class <- beta_overall[s, ] + sigma_overall[s, ] * beta_class_raw[s, , ]
-  beta_type <- beta_class[, classes_index] +
-    sigma_class[s, ] * beta_type_raw[s, , ]
-  log_w <- log1p(x_pair_years %*% exp(beta_type))
+for (s in seq_len(n_draws)) {
+  effect_type <- matrix(parameters$effect_type[s, , ], n_covs, n_types)
+  log_w <- log1p(x_pair_years %*% effect_type)
   log_w <- log_w[cbind(seq_along(pair_type), pair_type)]
   model_rate[s, ] <- rowsum(log_w, pair_years$pair_id)[, 1] / pairs$dt
-  model_effect <- model_effect + exp(beta_type) / nrow(draws_mat)
+  model_effect <- model_effect + effect_type / n_draws
 }
 pairs$model_rate <- colMeans(model_rate)
-rm(fitted, draws_mat, model_rate)
+rm(fitted, parameters, model_rate)
 
 net_slope <- bind_rows(
   net_slope,
