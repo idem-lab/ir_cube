@@ -13,8 +13,34 @@ TO DO: briefly describe susceptibility bioassay dta; discriminating concentratio
 
 ### Bioassay data processing
 
-TO DO: describe database consolidation, subsetting to WHO bioassays
-QC checks
+1. Combine bioassay records from five databases: the Vector Atlas, the Malaria Threats Map (discriminating concentration and intensity bioassays), the IR Mapper analysis-ready extracts, and the IR Mapper downloads of August 2022 and September 2024.
+2. Standardise the names of countries, insecticides and species.
+3. Keep WHO tube tests of the *An. gambiae* complex in African countries, with coordinates, a year, an insecticide, a concentration and a mortality.
+4. Where the number of mosquitoes tested is missing, take the number nearest 100 (from 50 to 200) that gives a whole number dead, or else 100.
+5. Drop records whose positive mortality gives no dead mosquitoes: proportions recorded as percentages.
+6. Find copies of one bioassay: records with the same country, year and insecticide, and the same number tested and number dead (or, if a number tested is missing, mortalities within 0.5 percentage points). At 0% or 100% mortality, the concentration and the species (or a record identified only to the complex) must also agree.
+    - Between databases: within 100 km, or 50 km if a number tested is missing, paired one-to-one: records with the same site name (ignoring case, punctuation and small spelling differences) first, then the nearest, as the databases place some sites inconsistently.
+    - Within a database: within 10 km, with the same concentration. Records with the same citation are copies only at the same coordinates, month and generation. Records with different citations are copies, paired as between databases, if the citations share at least two results between 0% and 100% (one dataset published in a paper and a report), and are otherwise checked by hand, as are three or more records of one citation with the same result between 0% and 100%. The checks used the papers' sites, methods, authors and funding. Of 55 sets of records checked in October 2026, 43 were copies, 11 were separate tests, and 1 held one of each.
+7. Keep one record of each set of copies, preferring a recorded number tested, then the most common concentration for the insecticide, then a species-level identification, then the database listed first in step 1. As copies are one test (and a copy of a copy is a copy), the record kept takes its coordinates from the most precisely located copy and its species from the most specific identification. A copy is coarsely located if its point, under one site name, matches copies at two or more named sites more than 1 km apart in another citation (one database gives a district's separate tests at one point), and less precisely located if it is named as a centre point or its coordinates have one decimal place or fewer. A copy that a reviewer judged more coarsely located than its partner ranks just below that partner. Among equally located copies, a copy in the IR Mapper extracts (the analysis-ready datasets of Moyes et al. 2019) is preferred. Then the record kept keeps its own coordinates, or else takes those of a copy with the same site name, or else the nearest.
+8. Drop records whose mortality is the number dead (it equals a copy's number dead in another database), complex-level records that equal the sum of one study's species-level records, and records that pool a study's separate tests at a site (their number tested equals the tests' sum in another database within 25 km, and their mortality is within 5 percentage points of the tests' pooled mortality).
+9. Check the country labels against the coordinates, and move, relabel or drop records that disagree.
+10. Label each study by its first author's surname and year of publication, or else by its citation, within a country. A study in a year is a survey.
+
+Checks of these choices (not used to classify records):
+
+- The distances in step 6 were chosen with a negative control. Pairs of records whose numbers dead differ by three to five cannot be copies, so their number at each distance estimates the number of exact matches there by chance. Each distance is where searching further adds more chance matches than copies. Within 100 km, an estimated 98% of copies are found and 3% of matches are by chance; on mortality alone within 50 km, 10% are. The databases georeference sites differently: only 62% of copies are in the same 1/24 degree (about 5 km) pixel.
+- The preference for the IR Mapper extracts' coordinates in step 7: where copies of a test are more than 5 km apart, MTM's copy agrees with the extracts in 392 tests and with IR Mapper 2022 in 192, and with the extracts in 94 and the Vector Atlas in 11.
+
+```{r echo = FALSE}
+attrition <- read.csv("../outputs/review/bioassay_attrition.csv",
+                      check.names = FALSE)
+knitr::kable(
+  t(attrition[, -1]),
+  col.names = attrition$source,
+  caption = paste("Number of bioassay records read from each source, removed",
+                  "at each step, and kept.")
+)
+```
 
 ### Bioassay data spatial coverage
 

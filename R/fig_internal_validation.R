@@ -45,9 +45,9 @@ insecticides_col <- insecticide_colours()
 
 # draws of the posterior predictive distribution at each observation
 # (R/two_stage_predictions.R): for the two-stage model, the mortality of a new
-# assay, with fresh pixel-year and pixel noise, at the external per-type
-# overdispersion; for the dynamical model, its predicted mortality at its own
-# overdispersion, each paired with the same posterior draw
+# assay, with fresh pixel-year, pixel and study-year noise, at the external
+# per-type overdispersion; for the dynamical model, its predicted mortality at
+# its own overdispersion, each paired with the same posterior draw
 sims <- assay_draws(df, types)
 rho_observations <- sims[[paste0("rho_", model)]]
 

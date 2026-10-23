@@ -235,8 +235,10 @@ set.seed(2026 - 9 - 30)
 # constraint is mixing in the hierarchy variances, not warmup: at the default
 # this fit reached worst Rhat 1.083 with minimum effective sample size 211 over
 # 16,000 post-warmup draws. Longer trajectories cost proportionally more time
-# per iteration but decorrelate those parameters.
-rho_draws <- mcmc(m, n_samples = 4000, warmup = 5000, chains = 4,
+# per iteration but decorrelate those parameters. On the deduplicated bioassays
+# of #63, 4,000 draws per chain still left the hierarchy parameters at worst
+# Rhat 1.066 (rho_type at most 1.011), hence 16,000.
+rho_draws <- mcmc(m, n_samples = 16000, warmup = 5000, chains = 4,
                   sampler = hmc(Lmin = 10, Lmax = 20),
                   initial_values = replicate(4, start, simplify = FALSE))
 

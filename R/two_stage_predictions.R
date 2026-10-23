@@ -7,9 +7,9 @@
 #
 # Draw d pairs dynamical draw d with a latent draw from N(mode, H^-1), shifted
 # by the cut-posterior formula for it (correction_node_draws()). The target is
-# m + omega + xi on the logit scale. u and p are observation-level noise: they
-# enter as fresh draws, in predictions of new assays (noise = TRUE) and in the
-# maps' n*_local (cell_noise()).
+# m + omega + xi on the logit scale. u, p and sy are observation-level noise:
+# they enter as fresh draws, in predictions of new assays (noise = TRUE), and u
+# and p in the maps' n*_local (cell_noise()).
 
 source("R/two_stage_helpers.R")
 source("R/dynamical_predictions.R")
@@ -40,13 +40,19 @@ two_stage_setup <- function(type, years, data, n_draws = 1000,
                       n_draws)[, 1]
   batches <- split(draws, ceiling(seq_along(draws) / batch_size))
   set.seed(string_seed(seed_key))
-  fields <- lapply(batches, function(d) {
-    f <- correction_node_draws(
-      fit, years, length(d),
-      m_draws_train = dynamical$logit_train[d, , drop = FALSE])
-    f$theta <- NULL
-    f
+  # all the draws in one call, so that each CCD point's conditional fit is
+  # made once, then split into the batches
+  all_fields <- correction_node_draws(
+    fit, years, length(draws),
+    m_draws_train = dynamical$logit_train[draws, , drop = FALSE])
+  offset <- cumsum(c(0, lengths(batches)))
+  fields <- lapply(seq_along(batches), function(b) {
+    columns <- offset[b] + seq_along(batches[[b]])
+    list(omega = all_fields$omega[, columns, drop = FALSE],
+         xi = lapply(all_fields$xi, function(x) x[, columns, drop = FALSE]),
+         point = all_fields$point[columns])
   })
+  rm(all_fields)
   list(type = type,
        k = match(type, dynamical$parameters$types),
        fit = fit,
@@ -63,7 +69,7 @@ two_stage_setup <- function(type, years, data, n_draws = 1000,
 
 # Stop unless the bioassays of `type` in `data` are those whose paired draws
 # `dynamical` (dynamical.rds) holds, row for row: the draws, the fit and the
-# u and p keys are matched to the data by row order
+# keys of its noise terms are matched to the data by row order
 check_two_stage_data <- function(dynamical, data, type) {
   rows <- data[data$insecticide_type == type, names(dynamical$keys)]
   if (!isTRUE(all.equal(as.data.frame(rows), as.data.frame(dynamical$keys),
@@ -119,26 +125,30 @@ project_cells <- function(fit, fields, chunk, years, noise = FALSE) {
     if (year <= fit$t0) return(omega)
     omega + as.matrix(A_xi %*% fields$xi[[as.character(year)]])
   })
-  if (noise) out <- Map(`+`, out, cell_noise(fit, chunk, years, ncol(omega)))
+  if (noise) {
+    out <- Map(`+`, out, cell_noise(fit, chunk, years, ncol(omega),
+                                    fields$point))
+  }
   out
 }
 
 # Fresh draws of the iid terms named in `terms` (iid_noise()) at the cells of
 # `chunk` and `years`, one per level of each key in the cells x years table: a
-# list by year of cells x n_draws
-cell_noise <- function(fit, chunk, years, n_draws,
+# list by year of cells x n_draws. With `point`, the CCD point of each draw,
+# each draw uses that point's SDs
+cell_noise <- function(fit, chunk, years, n_draws, point = NULL,
                        terms = names(correction_iid_terms)) {
   n_cells <- length(chunk$cells)
   fresh <- iid_noise(fit, tibble(cell = rep(chunk$cells, length(years)),
                                  year = rep(years, each = n_cells)),
-                     n_draws, terms)
+                     n_draws, point, terms)
   lapply(seq_along(years), function(j) {
     fresh[(j - 1) * n_cells + seq_len(n_cells), , drop = FALSE]
   })
 }
 
 # The logit of the dynamical model, m, and of the two-stage model, m + omega +
-# xi (plus fresh u and p if noise = TRUE), for the draws of batch b at the
+# xi (plus fresh noise if noise = TRUE), for the draws of batch b at the
 # cells of `chunk` (two_stage_chunk()): lists by year of draws x cells
 two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
   draws <- setup$batches[[b]]
@@ -164,7 +174,7 @@ two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
 # two_stage_cells()), and `weights` a cells x groups matrix (columns summing to
 # 1 for a weighted mean, or the identity for each cell alone). Returns draws x
 # groups x years arrays of the two-stage model (ilogit(m + omega + xi), with
-# fresh u and p if noise = TRUE) and of the dynamical model (ilogit(m)), with
+# fresh noise if noise = TRUE) and of the dynamical model (ilogit(m)), with
 # the groups and years as dimnames. Cells of zero weight in every group are
 # skipped
 two_stage_weighted_draws <- function(setup, cells, country, weights,
@@ -209,9 +219,10 @@ data_cell_country <- function(df) {
 # Posterior predictive draws of the mortality of new assays at every training
 # assay (row of df), for n_draws of the paired draws, from both models, for
 # the within-sample residual checks:
-#   two_stage  ilogit(m + omega + xi + fresh u + fresh p), draws x rows: u is
-#              shared by the assays of a pixel-year and p by those of a pixel,
-#              within a draw (predict_correction())
+#   two_stage  ilogit(m + omega + xi + fresh u + fresh p + fresh sy), draws x
+#              rows: within a draw, u is shared by the assays of a pixel-year,
+#              p by those of a pixel and sy by those of a study-year
+#              (predict_correction())
 #   dynamical  ilogit(m), draws x rows
 # and the overdispersion each model scores new assays at, draws x rows: the
 # two-stage model the external per-type rho (rho_lookup()), the dynamical
@@ -234,7 +245,8 @@ assay_draws <- function(df, types, n_draws = 1000,
     stopifnot(length(draws) == n_draws)
     m <- dynamical$logit_train[draws, , drop = FALSE]
     train <- tibble(lon = df$longitude[rows], lat = df$latitude[rows],
-                    year = df$year_start[rows], cell = df$cell[rows])
+                    year = df$year_start[rows], cell = df$cell[rows],
+                    study = df$study[rows])
     set.seed(string_seed(paste("assay draws", types[k])))
     out$two_stage[, rows] <- plogis(predict_correction(
       fit, train, m_draws_train = m, m_draws_new = m, n_draws = n_draws))

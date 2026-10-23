@@ -105,24 +105,23 @@ string_seed <- function(key) {
 #   map        the map's point prediction, which every point metric scores
 #              (MSE, excess, variance explained, bias, reliability bins,
 #              country-year means). For the two-stage model, the posterior
-#              mean of plogis(m + omega + xi), without u and p, from the
+#              mean of plogis(m + omega + xi), without u, p and sy, from the
 #              fold's map_draws; for every other model the mean of its
 #              p_draws, `predicted`, which is already its map. A two-stage
 #              fold without map_draws (assembled before #32) is an error
 #   predicted  the predictive mean, mean of p_draws. The log score, PIT,
 #              coverage, CRPS and the reliability envelopes use each model's
 #              own predictive distribution, the two-stage model's with its
-#              fresh u and p
+#              fresh u, p and sy
 #   floor      the data floor per record (noise_floor_record(), at the
 #              external rho), on every model; only means over records are
 #              meaningful
 #   model_floor  the two-stage model's floor U at the map value
-#              (model_floor_mse(), from the fold's fitted tau and sigma_p for
-#              the record's insecticide type); 0 for a type that fell back to
-#              the dynamical draws, NA for every other model
+#              (model_floor_mse(), from the fold's fitted noise SDs for
+#              the record's insecticide type); NA for every other model
 #   cdf_below_map, pmf_at_map
-#              the two-stage model's predictive distribution without u and p,
-#              for its coverage without them; NA for every other model
+#              the two-stage model's predictive distribution without u, p and
+#              sy, for its coverage without them; NA for every other model
 score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
 
   fold <- readRDS(file)
@@ -164,12 +163,12 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
   # the map and the two-stage model's floors; nothing here draws random
   # numbers, so the streams above are as they were
   map <- map_prediction(fold, summary$predicted)
-  site_noise <- site_noise_for_record(fold, test)
-  model_floor <- if (is.null(site_noise)) NA_real_ else
-    model_floor_mse(map, site_noise$tau, site_noise$sigma_p)
+  noise_sd <- noise_sd_for_record(fold, test)
+  model_floor <- if (is.null(noise_sd)) NA_real_ else
+    model_floor_mse(map, noise_sd)
   without_noise <- data.frame(cdf_below = rep(NA_real_, nrow(test)),
                               pmf_at = NA_real_)
-  if (!is.null(site_noise)) {
+  if (!is.null(noise_sd)) {
     without_noise <- ppd_summary(test$died, test$mosquito_number,
                                  thin_draws(fold$map_draws),
                                  rho_draws)[c("cdf_below", "pmf_at")]
@@ -237,20 +236,17 @@ map_prediction <- function(fold, predicted) {
   map
 }
 
-# The two-stage model's fitted SDs of u (tau) and p (sigma_p) per held-out
-# record, from the fit summary saved with the fold
-# (R/run_two_stage_folds.R); NULL for a model without them. A type that fell
-# back to the dynamical draws has neither term, so both are 0
-site_noise_for_record <- function(fold, test) {
+# The SD of the two-stage model's noise, sqrt(tau^2 + sigma_p^2 + sigma_sy^2)
+# from the SDs of u, p and sy fitted to the record's insecticide type, per
+# held-out record, from the fit summary saved with the fold
+# (R/run_two_stage_folds.R); NULL for a model without one
+noise_sd_for_record <- function(fold, test) {
   fits <- fold$fit_summary
-  if (is.null(fits) || !all(c("tau", "sigma_p") %in% names(fits))) {
-    return(NULL)
-  }
+  if (is.null(fits)) return(NULL)
   fits <- fits[match(test$insecticide_type, fits$insecticide_type), ]
-  stopifnot(!anyNA(fits$insecticide_type))
-  fell_back <- fits$fallback_dynamical | is.na(fits$tau)
-  list(tau = ifelse(fell_back, 0, fits$tau),
-       sigma_p = ifelse(fell_back, 0, fits$sigma_p))
+  noise_sd <- sqrt(fits$tau ^ 2 + fits$sigma_p ^ 2 + fits$sigma_sy ^ 2)
+  stopifnot(!anyNA(noise_sd))
+  noise_sd
 }
 
 # The expected coverage of each record's central interval at `level`, over the

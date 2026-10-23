@@ -36,7 +36,7 @@
 # predictive mean changes (#32), per group: the bias of the map and of the
 # predictive mean (they differ by the pull towards 0.5), the MSE of each, the
 # data floor, the model floor U and its share of the remainder above the data
-# floor, and coverage with and without u and p, reported nowhere else.
+# floor, and coverage with and without u, p and sy, reported nowhere else.
 #
 # Writes outputs/two_stage/cv_headline_two_stage.csv,
 # outputs/two_stage/cv_horizon_two_stage.csv and

@@ -45,11 +45,14 @@
 #              local_mean, local_sd posterior mean and SD of ilogit(m + omega
 #                                   + xi + u + p), the same draws plus fresh
 #                                   u and p (local_terms), for n*_local only
-#            Beyond T, xi is the AR(1) forecast. `map llin_effective` writes
-#            llin_effective's mean and SD as the sums of the pyrethroids',
-#            weighted by temporary/ingredient_weights.RDS. Summing the SDs
-#            takes the pyrethroids' errors as perfectly correlated, the
-#            largest SD their marginal SDs allow (n_star(), #40);
+#            The target is m + omega + xi: u, p and sy are observation-level
+#            noise, and only u and p enter the maps, in local_mean and
+#            local_sd. Beyond T, xi is the AR(1) forecast.
+#            `map llin_effective` writes llin_effective's mean and SD as the
+#            sums of the pyrethroids', weighted by
+#            temporary/ingredient_weights.RDS. Summing the SDs takes the
+#            pyrethroids' errors as perfectly correlated, the largest SD
+#            their marginal SDs allow (n_star(), #40);
 #   figures  the two-stage-specific maps in figures/two_stage/ (n*_pop and
 #            n*_local (#40), correction, difference from the dynamical
 #            model), in the layout of R/fig_ir_maps.R, which maps the
@@ -207,6 +210,7 @@ if (step == "fit") {
                     year = df$year_start[rows_k], cell = df$cell[rows_k],
                     died = df$died[rows_k],
                     mosquito_number = df$mosquito_number[rows_k],
+                    study = df$study[rows_k],
                     m = colMeans(dynamical$logit_train),
                     rho = rho_for_record(tibble(insecticide_type = type),
                                          rho_lookup()))
@@ -216,8 +220,6 @@ if (step == "fit") {
                                     prediction_mask_coords())
   time_fit <- system.time(fit <- fit_correction(train_k, t0 = baseline_year,
                                                 meshes = meshes))
-  stopifnot(fit$opt$convergence == 0, isTRUE(fit$stage_b$converged_first),
-            !isFALSE(fit$stage_b$converged_second))
 
   # every mapped cell must be inside both meshes, or its correction would be 0
   grid <- grid_cells()
@@ -226,7 +228,6 @@ if (step == "fit") {
   for (mesh in list(fit$mesh, fit$mesh_xi)) {
     stopifnot(all(Matrix::rowSums(mesh_basis(mesh, coords)) > 0.5))
   }
-  fit$obj <- NULL
   saveRDS(fit, file.path(type_dir(type), "fit.rds"))
   write.csv(bind_cols(tibble(insecticide_type = type,
                              rho = train_k$rho[1]),
@@ -283,8 +284,16 @@ if (step == "map") {
                              n_draws = n_map_draws,
                              batch_size = map_batch_size,
                              baseline_year = baseline_year)
-    # the posterior mean of omega + xi at the panel years
-    fields_mean <- correction_node_draws(setup$fit, map_years, mean = TRUE)
+    # the posterior mean of omega + xi at the panel years: the projection is
+    # linear, so it is the projection of the node fields' mean over the draws
+    mean_over_draws <- function(field) {
+      as.matrix(rowMeans(do.call(cbind, lapply(setup$fields, field))))
+    }
+    fields_mean <- list(
+      omega = mean_over_draws(function(f) f$omega),
+      xi = sapply(as.character(map_years), function(year) {
+        mean_over_draws(function(f) f$xi[[year]])
+      }, simplify = FALSE))
 
     grid <- grid_cells()
     mapped <- which(!is.na(grid$country))
@@ -323,7 +332,8 @@ if (step == "map") {
           sums$p_sq[, j] <- sums$p_sq[, j] + colSums(p ^ 2)
         }
         noise <- cell_noise(setup$fit, chunk, map_years,
-                            length(setup$batches[[b]]), local_terms)
+                            length(setup$batches[[b]]),
+                            setup$fields[[b]]$point, local_terms)
         for (i in seq_along(map_years)) {
           p <- plogis(logit$two_stage[[panel[i]]] + t(noise[[i]]))
           sums$local[, i] <- sums$local[, i] + colSums(p)
@@ -543,8 +553,8 @@ difference_limit <- ceiling(pooled_quantile("difference_pp") / 5) * 5
 
 model_note <- function(type) {
   T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf(paste("target m + omega + xi, without u and p; data to %i, later",
-                "years are the AR(1) forecast of xi"), T_k)
+  sprintf(paste("target m + omega + xi, without u, p and sy; data to %i,",
+                "later years are the AR(1) forecast of xi"), T_k)
 }
 
 # the posterior uncertainty as n*, under both readings of u and p
@@ -646,7 +656,7 @@ hyperparameters %>%
   select(insecticide_type,
          `omega range (km)` = range_omega, `omega SD` = sigma_omega,
          `eta range (km)` = range_eta, `eta SD` = sigma_eta, phi = phi,
-         tau = tau, sigma_p = sigma_p) %>%
+         tau = tau, sigma_p = sigma_p, sigma_sy = sigma_sy) %>%
   pivot_longer(-insecticide_type) %>%
   mutate(name = factor(name, levels = unique(name)),
          insecticide_type = factor(insecticide_type,
