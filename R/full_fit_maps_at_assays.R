@@ -4,7 +4,7 @@
 #
 #   dynamical  outputs/ir_maps (R/predict.R): posterior mean of ilogit(m)
 #   two_stage  outputs/two_stage/ir_maps (R/two_stage_maps.R): posterior mean
-#              of ilogit(m + omega + xi), without u and p
+#              of ilogit(m + omega + xi), without u, p and sy
 #
 #   Rscript R/full_fit_maps_at_assays.R
 #
