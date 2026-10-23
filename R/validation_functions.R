@@ -272,20 +272,19 @@ noise_floor_record <- function(died, mosquito_number, rho) {
 
 # the model floor -----------------------------------------------------------
 
-# The two-stage model (#21) treats u (per pixel-year) and p (per pixel) as
-# noise shared by the assays of a site: an assay at a pixel-year samples the
-# population mortality q = plogis(logit(m) + e), e ~ N(0, s^2), around the map
-# value m, with s^2 = tau^2 + sigma_p^2 from the fit. The model floor U (#32)
-# is the squared error this adds to the map's, as the model attributes it, for
-# a level score:
+# The two-stage model (#21) treats u (per pixel-year), p (per pixel) and sy
+# (per study-year, #55) as noise shared by the assays of a site or a survey:
+# an assay samples the population mortality q = plogis(logit(m) + e),
+# e ~ N(0, sd^2), around the map value m, with sd^2 = tau^2 + sigma_p^2 +
+# sigma_sy^2 from the fit. The model floor U (#32) is the squared error this
+# adds to the map's, as the model attributes it, for a level score:
 #
-#   U(m, s) = E[(q - m) ^ 2]
+#   U(m, sd) = E[(q - m) ^ 2]
 #
 # The expectation is the plain mean over 1000 evenly spaced normal quantiles,
 # within 4e-5 of 60-node Gauss-Hermite quadrature for map values 0.02 to 0.999
 # and SDs up to 1.5. Elementwise over map; m of exactly 0 or 1 gives U = 0.
-model_floor_mse <- function(map, tau, sigma_p) {
-  sd <- sqrt(tau ^ 2 + sigma_p ^ 2)
+model_floor_mse <- function(map, sd) {
   stopifnot(length(sd) %in% c(1, length(map)))
   e <- qnorm(ppoints(1000))
   sd <- rep_len(sd, length(map))
