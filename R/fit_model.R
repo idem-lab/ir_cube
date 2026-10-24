@@ -19,16 +19,16 @@ source("R/dynamical_model.R")
 # nets
 baseline_year <- 1995
 
-# set the final year of data (insufficient and spatially biased data for 2025)
-final_data_year <- 2024
-
 # the modelled subset: the insecticide types with at least 1000 unique
 # places/times, and alpha-cypermethrin (914 unique) because of its use in LLINs,
-# each at its modal concentration, in the modelled years and inside the mask,
+# each at its modal concentration, from the baseline year and inside the mask,
 # with indices to the classes, types, regions, countries and cells, and the
 # class of each type (R/bioassay_subset.R)
-list2env(modelled_bioassays(baseline_year, final_data_year), environment())
+list2env(modelled_bioassays(baseline_year), environment())
 years <- baseline_year - 1 + sort(unique(df$year_id))
+
+# the final year of data
+final_data_year <- max(df$year)
 
 # the model terms (R/dynamical_model.R), or an R expression for them in
 # IR_CUBE_MODEL_OPTIONS (docker/run_pod_job.sh)
@@ -52,7 +52,7 @@ x_cells_init <- init_covariate_matrix(unique_cells,
 n_covs <- ncol(x_cell_years)
 n_obs <- nrow(df)
 n_unique_cells <- length(unique_cells)
-n_times <- max(df$year_start) - min(df$year_start) + 1
+n_times <- max(df$year) - min(df$year) + 1
 n_classes <- length(classes)
 n_types <- length(types)
 n_regions <- length(regions)

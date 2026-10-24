@@ -85,7 +85,7 @@ nn_counts_grid <- function(latitude,
   # ahead it had to predict, for an indexing reason rather than an information
   # one: a record one year past the cut saw the whole window, one five years past
   # saw a single year of it, or none at all.
-  anchor <- pmin(year, max(training_data$year_start))
+  anchor <- pmin(year, max(training_data$year))
   year_diff <- -1 * seq(0, n_years_prior)
 
   n_test <- nrow(test_coords)
@@ -99,7 +99,7 @@ nn_counts_grid <- function(latitude,
   unique_key <- unique(mask_key)
   key_index <- match(mask_key, unique_key)
   valid_masks <- lapply(match(unique_key, mask_key), function(j) {
-    training_data$year_start %in% (anchor[j] + year_diff) &
+    training_data$year %in% (anchor[j] + year_diff) &
       training_data$insecticide_type == insecticide_type[j]
   })
 
@@ -242,7 +242,7 @@ nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
   counts <- predict_null_fixed_nn_counts(
     latitude = test_data$latitude,
     longitude = test_data$longitude,
-    year = test_data$year_start,
+    year = test_data$year,
     insecticide_type = test_data$insecticide_type,
     training_data = training_data,
     n_nearest_neighbours = n_neighbours,
@@ -285,7 +285,7 @@ nn_oracle_draws <- function(training_data, test_data,
   counts <- nn_counts_grid(
     latitude = test_data$latitude,
     longitude = test_data$longitude,
-    year = test_data$year_start,
+    year = test_data$year,
     insecticide_type = test_data$insecticide_type,
     training_data = training_data,
     k_values = k_grid,

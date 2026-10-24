@@ -19,9 +19,8 @@ source("R/two_stage_predictions.R")
 
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
-final_data_year <- 2024
-invisible(list2env(modelled_bioassays(baseline_year, final_data_year),
-                   environment()))
+invisible(list2env(modelled_bioassays(baseline_year), environment()))
+final_data_year <- max(df$year)
 
 # the covariates at the data cells, on their own scales (R/model_covariates.R)
 all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
@@ -250,13 +249,13 @@ df_validate %>%
   ) %>%
   # remove some outlying data skewing the smooths
   filter(
-    year_start <= quantile(year_start, 0.95),
-    year_start >= quantile(year_start, 0.05)
+    year <= quantile(year, 0.95),
+    year >= quantile(year, 0.05)
   ) %>%
   ungroup() %>%
   ggplot(
     aes(
-      x = year_start,
+      x = year,
       y = z_resid,
       colour = insecticide_type
     )
@@ -307,7 +306,7 @@ ks_type <- df_validate %>%
   arrange(desc(D))
 
 ks_year_class <- df_validate %>%
-  group_by(year_start, insecticide_class) %>%
+  group_by(year, insecticide_class) %>%
   reframe(ks_summary(z_resid)) %>%
   arrange(desc(D))
 

@@ -26,10 +26,11 @@ source("R/bioassay_subset.R")
 mask <- rast("data/clean/raster_mask.tif")
 
 baseline_year <- 1995
-final_data_year <- 2024
 
-# the modelled subset and its indexing, as in fit_model.R (R/bioassay_subset.R)
-list2env(modelled_bioassays(baseline_year, final_data_year), environment())
+# the modelled subset and its indexing, and the final year of data, as in
+# fit_model.R (R/bioassay_subset.R)
+list2env(modelled_bioassays(baseline_year), environment())
+final_data_year <- max(df$year)
 years <- baseline_year - 1 + sort(unique(df$year_id))
 
 # Define the training and test folds for: spatial extrapolation (country
@@ -45,7 +46,7 @@ test_min_year <- 2010
 # bioassays for each insecticide type) and make a table of counts
 country_bioassay_counts <- df %>%
   filter(
-    year_start >= test_min_year
+    year >= test_min_year
   ) %>%
   group_by(
     country_name,
@@ -155,7 +156,7 @@ df_interp <- df %>%
   mutate(
     fold = case_when(
       min_dists < test_threshold &
-        year_start >= test_min_year ~ "test",
+        year >= test_min_year ~ "test",
       min_dists > buffer_threshold ~ "training",
       .default = "excluded"
     ),
@@ -265,7 +266,7 @@ final_year <- min(nets_final_year, irs_final_year, pop_final_year)
 
 # Build one forecasting fold from a cut year and a window length.
 #
-# `training` must be `year_start < cut_year`, not "not in the test years": the
+# `training` must be `year < cut_year`, not "not in the test years": the
 # data run past the test window, and records after it in the training set make
 # the forecast an interpolation, which favoured the dynamical model over the
 # nearest neighbour null (#12 review).
@@ -284,7 +285,7 @@ forecasting_fold <- function(cut_year, window, data = df) {
   before_years <- cut_year - rev(seq_len(window))
 
   training <- data %>%
-    filter(year_start < cut_year)
+    filter(year < cut_year)
 
   fold <- list(
     cut_year = cut_year,
@@ -293,15 +294,15 @@ forecasting_fold <- function(cut_year, window, data = df) {
     before_years = before_years,
     training = training,
     test = data %>%
-      filter(year_start %in% test_years),
+      filter(year %in% test_years),
     before = training %>%
-      filter(year_start %in% before_years)
+      filter(year %in% before_years)
   )
 
   stopifnot(
-    max(fold$training$year_start) < cut_year,
-    all(fold$test$year_start %in% test_years),
-    all(fold$before$year_start %in% before_years),
+    max(fold$training$year) < cut_year,
+    all(fold$test$year %in% test_years),
+    all(fold$before$year %in% before_years),
     nrow(fold$test) > 0,
     nrow(fold$before) > 0
   )
@@ -336,7 +337,7 @@ temporal_forecasting_folds <- lapply(forecast_cuts, forecasting_fold,
 names(temporal_forecasting_folds) <- as.character(forecast_cuts)
 
 # The three-year 2020 fold this replaces is gone: it drew its training set with
-# `year_start <= cut`, so the cut year itself appeared in both training and
+# `year <= cut`, so the cut year itself appeared in both training and
 # holdout, and its window landed on the one pause in twenty years of decline
 # and was also the thinnest. Do not reinstate it.
 

@@ -54,7 +54,6 @@ insecticides_plot_lookup <- tibble(
 
 df_sub <- df %>%
   rename(
-    year = year_start,
     country = country_name,
     insecticide = insecticide_type
   )

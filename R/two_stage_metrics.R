@@ -55,11 +55,11 @@ models <- c("dynamical", "two_stage", "nearest_neighbour",
 stopifnot(all(models %in% scores$model))
 
 # years ahead of the last training year, for the forecasting folds: the
-# training data are year_start < cut, so the cut year itself is one year ahead
+# training data are year < cut, so the cut year itself is one year ahead
 scores <- scores %>%
   filter(model %in% models) %>%
   mutate(horizon = ifelse(startsWith(experiment, "temporal_forecasting"),
-                          year_start - suppressWarnings(as.integer(fold)) + 1,
+                          year - suppressWarnings(as.integer(fold)) + 1,
                           NA),
          squared_error = (observed - map) ^ 2,
          cover50 = expected_coverage(cdf_below, pmf_at, 0.5),

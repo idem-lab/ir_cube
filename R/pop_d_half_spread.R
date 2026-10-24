@@ -21,7 +21,7 @@ source("R/bioassay_subset.R")
 baseline_year <- 1995
 modelled <- modelled_bioassays(baseline_year)
 d <- pop_density_matrix(modelled$unique_cells, baseline_year,
-                        max(modelled$df$year_start))
+                        max(modelled$df$year))
 density <- d[cbind(modelled$df$cell_id, modelled$df$year_id)]
 
 d_half <- sort(unique(c(round(exp(seq(log(5), log(1000), length.out = 60))),

@@ -10,7 +10,7 @@ modelled_insecticides <- insecticides_plot_order
 # of mosquitoes tested per location/time
 count_location_years <- function(ir_africa) {
   ir_africa %>%
-    group_by(insecticide_type, latitude, longitude, year_start) %>%
+    group_by(insecticide_type, latitude, longitude, year) %>%
     summarise(
       mosquito_number = sum(mosquito_number),
       .groups = "drop"
@@ -25,13 +25,12 @@ count_location_years <- function(ir_africa) {
 }
 
 # subset to the modelled insecticides, the modal concentration of each, the
-# modelled years, and cells inside the mask. Adds year_id (1-indexed from
-# baseline_year) and the mask cell of each record.
+# years from baseline_year on, and cells inside the mask. Adds year_id
+# (1-indexed from baseline_year) and the mask cell of each record.
 subset_modelled_bioassays <- function(ir_africa,
                                       mask,
                                       insecticides_keep = modelled_insecticides,
-                                      baseline_year = 1995,
-                                      final_data_year = 2024) {
+                                      baseline_year = 1995) {
   ir_africa %>%
     filter(insecticide_type %in% insecticides_keep) %>%
     group_by(insecticide_type) %>%
@@ -42,12 +41,11 @@ subset_modelled_bioassays <- function(ir_africa,
     ungroup() %>%
     filter(
       # drop any from before the baseline
-      year_start >= baseline_year,
-      year_start <= final_data_year
+      year >= baseline_year
     ) %>%
     mutate(
       # create an index to the simulation year (in 1-indexed integers)
-      year_id = year_start - baseline_year + 1,
+      year_id = year - baseline_year + 1,
       # add on cell ids corresponding to these observations,
       cell = terra::cellFromXY(mask,
                                as.matrix(select(., longitude, latitude)))
@@ -60,12 +58,11 @@ subset_modelled_bioassays <- function(ir_africa,
 
 # The modelled bioassays and their indices (index_bioassays()), built as
 # R/fit_model.R builds them, for scripts that need the data but not the fit
-modelled_bioassays <- function(baseline_year = 1995, final_data_year = 2024) {
+modelled_bioassays <- function(baseline_year = 1995) {
   df <- subset_modelled_bioassays(
     readRDS("data/clean/all_gambiae_complex_data.RDS"),
     terra::rast("data/clean/raster_mask.tif"),
-    baseline_year = baseline_year,
-    final_data_year = final_data_year)
+    baseline_year = baseline_year)
   index_bioassays(df)
 }
 

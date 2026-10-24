@@ -52,7 +52,7 @@ scores <- require_map_columns(read.csv("outputs/cv_scores.csv",
 
 record_columns <- function(data) {
   data %>%
-    transmute(cell, insecticide_type, year_start, died, mosquito_number)
+    transmute(cell, insecticide_type, year, died, mosquito_number)
 }
 
 # the assays of one origin's two windows, with each model's map at them
@@ -99,15 +99,15 @@ pairs <- bind_rows(lapply(cuts, function(cut) {
              relationship = "many-to-many") %>%
     mutate(cut = as.integer(cut), .before = 1)
 })) %>%
-  mutate(gap = year_start_a - year_start_b,
+  mutate(gap = year_a - year_b,
          rate = (died_a / mosquito_number_a - died_b / mosquito_number_b) /
            gap)
 
 # D's copy of each pair: the first origin's. Identical assays (#31) make the
 # values ambiguous, so copies are matched by the pair's assays and the rank
 # among identical pairs at the origin
-pair_columns <- c("cell", "insecticide_type", "year_start_b", "died_b",
-                  "mosquito_number_b", "year_start_a", "died_a",
+pair_columns <- c("cell", "insecticide_type", "year_b", "died_b",
+                  "mosquito_number_b", "year_a", "died_a",
                   "mosquito_number_a")
 pairs <- pairs %>%
   group_by(cut, across(all_of(pair_columns))) %>%
@@ -132,12 +132,12 @@ full_fit_file <- "outputs/full_fit_maps_at_assays.csv"
 full_fit <- read.csv(full_fit_file)
 at <- function(year) {
   tibble(cell = pairs$cell, insecticide_type = pairs$insecticide_type,
-         year_start = year) %>%
-    left_join(full_fit, by = c("cell", "year_start", "insecticide_type"),
+         year = year) %>%
+    left_join(full_fit, by = c("cell", "year", "insecticide_type"),
               relationship = "many-to-one")
 }
-full_b <- at(pairs$year_start_b)
-full_a <- at(pairs$year_start_a)
+full_b <- at(pairs$year_b)
+full_a <- at(pairs$year_a)
 if (anyNA(full_b) || anyNA(full_a)) {
   stop("pairs have no full-fit map at one of their assays' pixel-years: ",
        full_fit_file, " is from different data than the folds")
@@ -174,8 +174,8 @@ for (panel in c("D", "E")) {
     pixels, median_gap)))
 }
 
-write.csv(pairs %>% select(cut, cell, insecticide_type, year_start_b,
-                           year_start_a, gap, died_b, mosquito_number_b,
+write.csv(pairs %>% select(cut, cell, insecticide_type, year_b,
+                           year_a, gap, died_b, mosquito_number_b,
                            died_a, mosquito_number_a,
                            rate, floor, w, in_sample, w_in_sample,
                            starts_with("fold_"), starts_with("full_")),

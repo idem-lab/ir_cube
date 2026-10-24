@@ -185,7 +185,7 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       country_name = test$country_name,
       citation = test$citation,
       study = test$study,
-      year_start = test$year_start,
+      year = test$year,
       cell = test$cell,
       # One randomisation replicate, not the mean of them. Averaging over
       # replicates converges to the mid-P value `cdf_below + 0.5 * pmf_at`,
@@ -302,7 +302,7 @@ aggregate_fold <- function(entry, grouping) {
   test <- entry$fold$test_df
   group <- switch(
     grouping,
-    country_year = paste(test$country_name, test$year_start,
+    country_year = paste(test$country_name, test$year,
                          test$insecticide_type)
   )
   # the pooled map: each assay's map weighted by its mosquitoes, as the
@@ -345,7 +345,7 @@ by_group <- function(scores, ...) {
 # the key identifying a held-out assay, so that predictions from different
 # models are matched on the record rather than on row order
 record_key <- function(x) {
-  columns <- c("cell", "year_start", "insecticide_type", "died",
+  columns <- c("cell", "year", "insecticide_type", "died",
                "mosquito_number")
   # paste() drops a NULL argument silently, so a missing column would make two
   # keys agree on fewer fields, or on none at all

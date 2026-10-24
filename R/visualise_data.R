@@ -13,7 +13,6 @@ ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 ir_africa %>%
   # fix up some names for plotting
   rename(
-    year = year_start,
     mortality = mortality_adjusted,
     country = country_name,
     insecticide = insecticide_type

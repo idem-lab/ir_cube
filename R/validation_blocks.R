@@ -330,7 +330,7 @@ spatial_blocks <- lapply(seq_len(n_blocks), function(this_block) {
   held_out <- !is.na(df_blocked$block) & df_blocked$block == this_block
   list(
     training = df_blocked[!held_out, ] %>% select(-block),
-    test = df_blocked[held_out & df_blocked$year_start >= test_min_year, ] %>%
+    test = df_blocked[held_out & df_blocked$year >= test_min_year, ] %>%
       select(-block)
   )
 })
@@ -362,7 +362,7 @@ print(bind_rows(lapply(seq_len(n_blocks), function(i) {
 # every blocked record is held out exactly once
 stopifnot(
   sum(vapply(spatial_blocks, function(x) nrow(x$test), numeric(1))) ==
-    sum(!is.na(df_blocked$block) & df_blocked$year_start >= test_min_year),
+    sum(!is.na(df_blocked$block) & df_blocked$year >= test_min_year),
   all(vapply(spatial_blocks, function(x) {
     length(intersect(x$training$cell, x$test$cell)) == 0
   }, logical(1)))

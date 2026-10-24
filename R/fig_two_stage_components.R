@@ -48,7 +48,7 @@ rows_k <- which(df$type_id == k)
 fit <- readRDS(file.path(maps_dir, "fit.rds"))
 dynamical <- readRDS(file.path(maps_dir, "dynamical.rds"))
 train_k <- tibble(lon = df$longitude[rows_k], lat = df$latitude[rows_k],
-                  year = df$year_start[rows_k], cell = df$cell[rows_k],
+                  year = df$year[rows_k], cell = df$cell[rows_k],
                   died = df$died[rows_k],
                   mosquito_number = df$mosquito_number[rows_k])
 stopifnot(fit$n_obs == nrow(train_k),

@@ -220,7 +220,7 @@ if (identical(mode, "predict")) {
     report("map cells %i of %i", max(block), length(cells))
   }
 
-  observed <- df[, c("cell", "insecticide_type", "year_start", "died",
+  observed <- df[, c("cell", "insecticide_type", "year", "died",
                      "mosquito_number")]
   saveRDS(list(fit = fit_file, chains_kept = chains_kept,
                parameters = parameters_table, px_cells = px_cells, px = px,
@@ -252,7 +252,7 @@ if (identical(mode, "predict")) {
     x <- if (name == "main") main else readRDS(fits[[name]])
     index <- cbind(match(observed$cell, x$px_cells),
                    match(observed$insecticide_type, types),
-                   match(as.character(observed$year_start),
+                   match(as.character(observed$year),
                          dimnames(x$px)[[3]]))
     predicted <- x$px[index]
     for (type in types) {

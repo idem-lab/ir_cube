@@ -75,20 +75,18 @@ infer_sample_size <- function(mortality_percent,
   # for any that don't have a match, put in the index for 100
   missing_index <- which(possible_integers == default)
   
-  # function to find the smallest, without dropping values
+  # function to find the smallest, without dropping values. With no match the
+  # distances are all Inf and which.min() would return the first of them, so
+  # test for that (and for a missing mortality, whose distances are all NA)
   closest <- function(distances) {
-    closest_index <- which.min(distances)
-    if (length(closest_index) == 0) {
-      closest_index <- missing_index
-    } 
-    closest_index
+    if (!any(is.finite(distances))) {
+      return(missing_index)
+    }
+    which.min(distances)
   }
 
   closest_index <- apply(valid_distance, 2, closest)
-  
-  # missing <- !apply(is_integer, 2, any)
-  # closest_index[missing] <- missing_index
-  
+
   # look up the corresponding integers
   possible_integers[closest_index]
   

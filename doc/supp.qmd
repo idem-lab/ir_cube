@@ -13,8 +13,43 @@ TO DO: briefly describe susceptibility bioassay dta; discriminating concentratio
 
 ### Bioassay data processing
 
-TO DO: describe database consolidation, subsetting to WHO bioassays
-QC checks
+1. Combine bioassay records from five databases: the Vector Atlas, the Malaria Threats Map (discriminating concentration and intensity bioassays), the IR Mapper analysis-ready extracts, and the IR Mapper downloads of August 2022 and September 2024.
+2. Standardise the names of countries, insecticides and species.
+3. Keep WHO tube tests (not bottle, larval or synergist assays) of the *An. gambiae* complex in African countries, with coordinates, a year, an insecticide, a concentration and a mortality.
+4. Where the number of mosquitoes tested is missing, take the number nearest 100 (from 50 to 200) that gives a whole number dead, or else 100.
+5. Drop records whose positive mortality is below one mosquito: proportions, or numbers dead, recorded as percentages.
+6. Drop papers repeated in a download: where at least half of a paper's records in a download are repeated, identical in every column but the record's ID (the paper imported twice, or one row copied down for many tests), keep one of each. A paper's other repeated records are separate tests.
+7. Correct years: records of two databases that cite the same paper and match exactly (the same country, insecticide, concentration, site name, number tested and number dead, from 5% to 95% mortality, within 100 km) in years that don't overlap are one test. Below 5% or above 95%, repeat visits often give the same result. The test takes the years of its best record: first, one not in the paper's year of publication where another record is earlier (databases give the year of publication where a paper gives none); then one from the database that gives the paper's matched records more different years (another lumps them into one year); then one from the IR Mapper extracts, Vector Atlas, MTM, IR Mapper 2022 and IR Mapper 2024, in that order. A test whose best records differ in their years keeps its years. Exact matches between different papers in different years are separate tests.
+8. Find copies of one bioassay: records with the same country, insecticide and concentration, overlapping years (from a record's start year to its end year, where one is given), and the same number tested and number dead (or, if a number tested is missing, mortalities within 0.5 percentage points). At 0% or 100% mortality, the species (or a record identified only to the complex) must also agree. Records that agree in all but concentration are not copies; the models use each insecticide's most common concentration, so at most one of them is modelled.
+    - Between databases: within 100 km, or 50 km if a number tested is missing, paired one-to-one: records with the same site name (ignoring case, punctuation and small spelling differences) first, then the nearest, as the databases place some sites inconsistently.
+    - Within a database: within 10 km. Records with the same citation are copies only in two downloads of the database (the IR Mapper extracts' species and complex files, or the Malaria Threats Map's discriminating-concentration and intensity downloads), at the same coordinates, month and generation, paired one-to-one. Within one download, a paper's records are separate tests (bar step 6): we trust the authors and the databases' extractors. Records with different citations are copies, paired as between databases, if the citations share at least two results between 0% and 100% (one dataset published in a paper and a report); otherwise each pair is decided by hand, from the papers' sites, methods, authors and funding.
+9. Keep one record of each set of copies, preferring a recorded number tested, then the database listed first in step 1.
+10. Drop records whose mortality is on the wrong scale: read as a number dead or a proportion, it gives the number dead of a record in another database with the same country, years, insecticide, concentration and number tested, within 100 km, unless the record also has a copy on its own scale in another database. Drop complex-level records that equal the sum of one study's species-level records, and records that pool a study's separate tests at a site (their number tested equals the tests' sum in another database within 25 km, and their mortality is within 5 percentage points of the tests' pooled mortality).
+11. As copies are one test (and a copy of a copy is a copy, including the copies on the wrong scale in step 10), the record kept takes the coordinates of the best located copy: one not named as a centre point or centroid, with both coordinates to two or more decimal places; then one in the IR Mapper extracts (the analysis-ready datasets of Moyes et al. 2019, abstracted and checked to one standard); then the record kept, or else a copy with the same site name, or else the nearest. It takes its years from the copy with the shortest range of years, then its own, then the preferred record's. The models use the middle of these years, rounded down.
+12. Check the country labels against the coordinates, and move, relabel or drop records that disagree.
+13. Label each study by its first author's surname and year of publication, or else by its citation, within a country. A study in a year is a survey.
+
+Checks of these choices (not used to classify records):
+
+- The distances in step 8 are a choice: the databases georeference sites differently, and in October 2026 only 61% of copies were in the same 1/24 degree (about 5 km) pixel.
+- The 5 percentage point limit for pooled records in step 10: in October 2026, 47 records matched a study's pooled tests within 5 points (32 within half a point), 2 between 5 and 10 points, and 14 more than 10 points away, as expected by chance.
+- Concentrations in step 8: in October 2026, 518 pairs of kept records in two databases (835 records) agreed in all but concentration, e.g. deltamethrin at 0.05% and 0.75%, or bendiocarb at 0.01% and 0.1%. Between 0% and 100%, 148 of them matched on the count against about 4 by chance, so nearly all are one test with one concentration mis-entered.
+- Repeated papers in step 6: in October 2026, papers repeated in a download had 75% to 100% of their records repeated, and all others 40% or fewer. The others' repeated records (151 records of 29 papers in a download) were checked by hand in October 2026: some are separate tests (a paper reporting many tests of one insecticide at a site in a year can give two the same result), some are likely duplicates, and most, at 0% or 100% mortality, can't be told apart.
+- Years in step 7: the rules come from checks by hand of 22 studies in October 2026. Some exact matches between different papers in different years are one test published twice; they stay separate tests.
+- Hand decisions in step 8: all 200 flagged pairs were decided in October 2026, 144 as copies and 56 as separate tests. The prep warns of any flagged pair without a decision.
+
+Limitation: after step 11, the best located copies of 115 tests in 48 studies are still more than 50 km apart (50 to 141 km, median 75 km), and nothing in the databases' fields or citations identifies the better copy.
+
+```{r echo = FALSE}
+attrition <- read.csv("../outputs/review/bioassay_attrition.csv",
+                      check.names = FALSE)
+knitr::kable(
+  t(attrition[, -1]),
+  col.names = attrition$source,
+  caption = paste("Number of bioassay records read from each source, removed",
+                  "at each step, and kept.")
+)
+```
 
 ### Bioassay data spatial coverage
 

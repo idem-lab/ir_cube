@@ -163,7 +163,7 @@ before_k <- if (length(before_rows) == 0) NULL else
 train_k <- mutate(select(assays$training[train_rows, ], -before),
                   m = colMeans(m_draws_train), rho = rho_type[[type]])
 test_k <- with(assays$test_df[test_rows, ],
-               tibble(lon = longitude, lat = latitude, year = year_start,
+               tibble(lon = longitude, lat = latitude, year = year,
                       cell = cell))
 # the map is evaluated where the published map is: at the pixel centre, not
 # the assay's own coordinates (R/two_stage_maps.R)

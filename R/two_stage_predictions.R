@@ -234,7 +234,7 @@ assay_draws <- function(df, types, n_draws = 1000,
     stopifnot(length(draws) == n_draws)
     m <- dynamical$logit_train[draws, , drop = FALSE]
     train <- tibble(lon = df$longitude[rows], lat = df$latitude[rows],
-                    year = df$year_start[rows], cell = df$cell[rows])
+                    year = df$year[rows], cell = df$cell[rows])
     set.seed(string_seed(paste("assay draws", types[k])))
     out$two_stage[, rows] <- plogis(predict_correction(
       fit, train, m_draws_train = m, m_draws_new = m, n_draws = n_draws))

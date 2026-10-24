@@ -27,7 +27,6 @@ mask <- rast("data/clean/raster_mask.tif")
 ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
 
 baseline_year <- 1995
-final_data_year <- 2024
 
 insecticides_keep <- c("Alpha-cypermethrin",
                        "Deltamethrin",
@@ -51,8 +50,7 @@ df <- ir_africa %>%
   filter(concentration == sample_mode(concentration)) %>%
   ungroup() %>%
   filter(
-    year_start >= baseline_year,
-    year_start <= final_data_year,
+    year >= baseline_year,
     !is.na(died),
     !is.na(mosquito_number),
     mosquito_number > 1
@@ -64,7 +62,7 @@ df <- ir_africa %>%
 
 # identify replicate groups: one pixel, one year, one insecticide
 df <- df %>%
-  group_by(cell, year_start, insecticide_type) %>%
+  group_by(cell, year, insecticide_type) %>%
   mutate(
     group_id = cur_group_id(),
     group_size = n()
@@ -96,7 +94,7 @@ representativeness <- df %>%
     mean_mortality = mean(died / mosquito_number),
     sd_mortality = sd(died / mosquito_number),
     median_mosquito_number = median(mosquito_number),
-    median_year = median(year_start),
+    median_year = median(year),
     countries = n_distinct(country_name),
     proportion_pyrethroid = mean(insecticide_class == "Pyrethroids"),
     .groups = "drop"

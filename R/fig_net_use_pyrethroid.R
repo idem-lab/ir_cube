@@ -10,8 +10,8 @@ source("R/functions.R")
 net_type_w <- c(0.25, 0.47)
 years <- 2000:2025
 summary_years <- c(2000, 2005, 2010, 2015, 2020, 2024, 2025)
-# the last year of bioassay data and of net_use_cube.tif
-final_data_year <- 2024
+# the last year of net_use_cube.tif
+last_net_year <- 2024
 
 netcrop <- read_csv("data/raw/itn/net_use_20261002/netcrop_multitype_timeseries.csv",
                     show_col_types = FALSE) %>%
@@ -49,9 +49,9 @@ shares %>%
 
 mask <- rast("data/clean/raster_mask.tif")
 bioassays <- readRDS("data/clean/all_gambiae_complex_data.RDS") %>%
-  mutate(cell = terra::cellFromXY(mask, cbind(longitude, latitude)),
-         year = pmin(pmax(year_start, min(years)), final_data_year)) %>%
-  filter(!is.na(cell), year_start >= 1995) %>%
+  mutate(cell = terra::cellFromXY(mask, cbind(longitude, latitude))) %>%
+  filter(!is.na(cell), year >= 1995) %>%
+  mutate(year = pmin(pmax(year, min(years)), last_net_year)) %>%
   distinct(cell, year)
 cube_at <- function(cube) {
   x <- as.matrix(terra::extract(cube, bioassays$cell))
