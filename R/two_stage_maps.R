@@ -182,7 +182,7 @@ if (step == "prepare") {
     saveRDS(list(logit_train = logit_assays[, df$type_id == k, drop = FALSE],
                  parameters = parameters,
                  logit_init = logit_init,
-                 keys = df[df$type_id == k, c("cell", "year_start", "died",
+                 keys = df[df$type_id == k, c("cell", "year", "died",
                                               "mosquito_number")]),
             file.path(type_dir(types[k]), "dynamical.rds"))
   }
@@ -204,7 +204,7 @@ if (step == "fit") {
   check_two_stage_data(dynamical, df, type)
   rows_k <- which(df$type_id == k)
   train_k <- tibble(lon = df$longitude[rows_k], lat = df$latitude[rows_k],
-                    year = df$year_start[rows_k], cell = df$cell[rows_k],
+                    year = df$year[rows_k], cell = df$cell[rows_k],
                     died = df$died[rows_k],
                     mosquito_number = df$mosquito_number[rows_k],
                     m = colMeans(dynamical$logit_train),

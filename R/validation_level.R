@@ -55,7 +55,7 @@ held_out <- function(experiment) {
   data <- scores %>% filter(.data$experiment == !!experiment)
   reference <- data %>% filter(model == "dynamical")
   out <- reference %>%
-    transmute(cell, year_start, insecticide_type, insecticide_class, fold,
+    transmute(cell, year, insecticide_type, insecticide_class, fold,
               died, mosquito_number, observed, floor)
   for (bar in names(models)) {
     rows <- data %>% filter(model == models[[bar]])
@@ -75,9 +75,9 @@ extrapolation <- held_out(experiments[["extrapolation"]])
 # ceiling and local bar
 full_fit_file <- "outputs/full_fit_maps_at_assays.csv"
 full_fit <- interpolation %>%
-  select(cell, year_start, insecticide_type) %>%
+  select(cell, year, insecticide_type) %>%
   left_join(read.csv(full_fit_file),
-            by = c("cell", "year_start", "insecticide_type"),
+            by = c("cell", "year", "insecticide_type"),
             relationship = "many-to-one")
 if (anyNA(full_fit$dynamical) || anyNA(full_fit$two_stage)) {
   stop(sum(is.na(full_fit$dynamical)), " interpolation test assays have ",
@@ -120,12 +120,12 @@ geometry <- read.csv("outputs/cv_geometry.csv",
                      colClasses = c(fold = "character"))
 median_km <- function(data, experiment) {
   km <- data %>%
-    select(fold, cell, year_start, insecticide_type) %>%
+    select(fold, cell, year, insecticide_type) %>%
     left_join(geometry %>%
                 filter(.data$experiment == !!experiment) %>%
-                select(fold, cell, year_start, insecticide_type,
+                select(fold, cell, year, insecticide_type,
                        distance_same),
-              by = c("fold", "cell", "year_start", "insecticide_type"),
+              by = c("fold", "cell", "year", "insecticide_type"),
               relationship = "many-to-one")
   stopifnot(!anyNA(km$distance_same))
   median(km$distance_same)

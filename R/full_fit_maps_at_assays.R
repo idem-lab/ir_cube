@@ -16,15 +16,15 @@ source("R/functions.R")
 source("R/bioassay_subset.R")
 
 # the modelled assays, as R/fit_model.R builds them
-invisible(list2env(modelled_bioassays(1995, 2024), environment()))
+invisible(list2env(modelled_bioassays(1995), environment()))
 
 maps <- df %>%
-  distinct(insecticide_type, year_start, cell) %>%
-  group_by(insecticide_type, year_start) %>%
+  distinct(insecticide_type, year, cell) %>%
+  group_by(insecticide_type, year) %>%
   group_modify(function(keys, group) {
     at <- function(dir) {
       file <- file.path(dir, group$insecticide_type,
-                        sprintf("ir_%i_susceptibility.tif", group$year_start))
+                        sprintf("ir_%i_susceptibility.tif", group$year))
       terra::extract(rast(file), keys$cell)[, 1]
     }
     mutate(keys,
@@ -32,7 +32,7 @@ maps <- df %>%
            two_stage = at("outputs/two_stage/ir_maps"))
   }) %>%
   ungroup() %>%
-  select(cell, year_start, insecticide_type, dynamical, two_stage)
+  select(cell, year, insecticide_type, dynamical, two_stage)
 stopifnot(!anyNA(maps$dynamical), !anyNA(maps$two_stage))
 
 write.csv(maps, "outputs/full_fit_maps_at_assays.csv", row.names = FALSE)
