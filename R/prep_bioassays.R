@@ -1,1413 +1,734 @@
-# prep data for IR mapping
+# Prepare the bioassay data for modelling: read the five databases, put them on
+# a common format, remove copies of the same bioassay, and save the An. gambiae
+# complex records to data/clean/all_gambiae_complex_data.RDS. The supplement
+# (doc/supp.qmd, "Bioassay data processing") describes the method;
+# outputs/review/bioassay_attrition.csv counts the records each step removes,
+# outputs/review/bioassay_paper_versions.csv lists each paper's versions and
+# the one kept, outputs/review/bioassay_links.csv lists every other copy
+# removed, outputs/review/bioassay_review_pairs.csv the pairs of copies
+# flagged for review, and outputs/review/bioassay_country_relabels.csv the
+# records whose country label disagrees with their coordinates.
 
-# load packages and functions
 source("R/packages.R")
 source("R/functions.R")
+source("R/bioassay_prep_functions.R")
+source("R/bioassay_subset.R")
+
+# ---- read the databases ----
 
 # The 20261005 MTM discriminating concentration download fills missing values
-# of MORTALITY_ADJUSTED with 0: it has no missing values, and all 306 records
-# missing in the 20251031 download are exactly 0, 87 of them labelled
-# susceptible. The papers checked report nonzero mortality for these (#27). So
-# we treat them as missing and drop them, by ID against the 20251031 download;
-# the 232 zeros already in that download are kept. Set this to FALSE to keep
-# them.
-drop_mtm_filled_mortality <- TRUE
+# of MORTALITY_ADJUSTED with 0, where the papers checked report nonzero
+# mortality (#27). So we drop the records missing it in the 20251031 download,
+# by ID; the zeros already in that download are kept.
 mtm_filled_mortality_ids <- read_xlsx(
   "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
   sheet = "Data", col_types = "text") %>%
   filter(is.na(MORTALITY_ADJUSTED)) %>%
   pull(ID)
 
-# load data from malaria threat map discrimintating concentraation bioassays and
-# subset to Africa
-ir_dis_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
-  sheet = "Data") %>%
-  # drop the records whose missing mortality was filled with 0, see above
-  filter(
-    !(drop_mtm_filled_mortality & ID %in% mtm_filled_mortality_ids)
-  ) %>%
-  # these were read in as characters and readxl is a pain to set column types
-  mutate(
-    across(
-      c(LATITUDE,
-        LONGITUDE,
-        MOSQUITO_NUMBER,
-        MORTALITY_ADJUSTED),
-      as.numeric)
-  ) %>%
-  # subset to Africa
-  filter(
-    COUNTRY_NAME %in% mtm_africa_countries()
-  ) %>%
-  # throw out a dodgy coordinate
-  filter(
-    LONGITUDE > -50
-  ) %>%
-  # subset to required columns
-  select(
-    MOSQUITO_NUMBER,
-    MORTALITY_ADJUSTED,
-    YEAR_START,
-    LATITUDE,
-    LONGITUDE,
-    SPECIES,
-    INSECTICIDE_TYPE,
-    INSECTICIDE_CLASS,
-    INSECTICIDE_CONC,
-    TEST_TYPE,
-    COUNTRY_NAME,
-    CITATION
-  ) %>%
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    MOSQUITO_NUMBER = case_when(
-      is.na(MOSQUITO_NUMBER) ~ infer_sample_size(MORTALITY_ADJUSTED),
-      .default = round(MOSQUITO_NUMBER)
-    ), 
-    # compute the integer number that died, for model
-    DIED = round(MOSQUITO_NUMBER * MORTALITY_ADJUSTED / 100)
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(MORTALITY_ADJUSTED)
-  ) %>%
-  # remove these shouty caps
-  rename_all(
-    tolower
-  )  %>% 
-  # add database name
-  mutate(source = "mtm_dis") %>%   
-  # coerce concentration to numeric
-  mutate(
-    concentration = as.numeric(str_remove(insecticide_conc, "%")
-                               )
-    # note this will cause coercion NAs because some would have mu-gram units or be not recorded, we
-    # could remove later if needed
-  ) %>% 
-  select(-insecticide_conc)
+mtm_columns <- c(record_id = "ID", citation = "CITATION",
+                 link = "CITATION_URL", site = "SITE_NAME",
+                 country_name = "COUNTRY_NAME", latitude = "LATITUDE",
+                 longitude = "LONGITUDE", year_start = "YEAR_START",
+                 generation = "STAGE_ORIGIN",
+                 insecticide_type = "INSECTICIDE_TYPE",
+                 concentration = "INSECTICIDE_CONC", test_type = "TEST_TYPE",
+                 mosquito_number = "MOSQUITO_NUMBER",
+                 mortality_adjusted = "MORTALITY_ADJUSTED")
 
+# An IR Mapper analysis-ready extract, as a source (below), given the column
+# naming its species. The extracts are in Windows-1252, with "NR" and "NF" for
+# missing values. Records pooled over several sites ("multipoint") are
+# dropped.
+ir_mapper_extract <- function(source, file, species_column) {
+  force(file)
+  list(
+    source = source,
+    database = "IR Mapper extracts",
+    read = function() {
+      read_csv(file, col_types = cols(.default = "c"),
+               na = c("", "NA", "NR", "NF"),
+               locale = locale(encoding = "windows-1252"))
+    },
+    keep = function(d) filter(d, `Site type` == "point"),
+    columns = c(ir_mapper_extract_columns, species = species_column)
+  )
+}
+ir_mapper_extract_columns <- c(record_id = "Bioassay ID",
+                               citation = "Source 1 citation",
+                               site = "Site name", country_name = "Country",
+                               latitude = "Latitude", longitude = "Longitude",
+                               year_start = "Start year",
+                               year_end = "End year",
+                               month = "Start month",
+                               generation = "Generation",
+                               insecticide_type = "Insecticide tested",
+                               concentration = "Concentration (%)",
+                               test_type = "Test protocol",
+                               mosquito_number = "No. mosquitoes tested",
+                               mortality_adjusted = "Percent mortality")
 
-# load data from malaria threat map intensity concentration bioassays and
-# subset to Africa
-ir_int_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20261005.xlsx",
-  sheet = "Data") %>%
-  # these were read in as characters and readxl is a pain to set column types
-  mutate(
-    across(
-      c(LATITUDE,
-        LONGITUDE,
-        MOSQUITO_NUMBER,
-        MORTALITY_ADJUSTED),
-      as.numeric)
-  ) %>%
-  # subset to Africa
-  filter(
-    COUNTRY_NAME %in% mtm_africa_countries()
-  ) %>%
-  # probably don't need this but won't hurt
-  filter(
-    LONGITUDE > -50
-  ) %>%
-  # subset to required columns
-  select(
-    MOSQUITO_NUMBER,
-    MORTALITY_ADJUSTED,
-    YEAR_START,
-    LATITUDE,
-    LONGITUDE,
-    VECTOR_SPECIES,
-    INSECTICIDE_TYPE,
-    INSECTICIDE_CLASS,
-    INSECTICIDE_CONC,
-    #INSECTICIDE_INTENSITY, # don't need this because it is just a multiplier of discrimination
-    #concentration
-    TEST_TYPE,
-    COUNTRY_NAME,
-    CITATION
-  ) %>%
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    MOSQUITO_NUMBER = case_when(
-      is.na(MOSQUITO_NUMBER) ~ infer_sample_size(MORTALITY_ADJUSTED),
-      .default = round(MOSQUITO_NUMBER)
-    ), 
-    # compute the integer number that died, for model
-    DIED = round(MOSQUITO_NUMBER * MORTALITY_ADJUSTED / 100)
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(MORTALITY_ADJUSTED)
-  ) %>%
-  # remove these shouty caps
-  rename_all(
-    tolower
-  ) %>% 
-  # add database name
-  mutate(source = "mtm_int") %>%   
-  # coerce concentration to numeric
-  mutate(
-    concentration = as.numeric(str_remove(insecticide_conc, "%")
-    )
-    # note this will cause coercion NAs because some would have mu-gram units or be not recorded, we
-    # could remove later if needed
-  ) %>% 
-  select(-insecticide_conc) %>% 
-  # standardise species column name
-  rename(species = "vector_species")
+# Vector Atlas cites a study by DOI, so we build a citation from its author and
+# publication year columns. These sometimes vary within a study (a fill-down
+# error gives one study a year per record, 2014 to 2031), so we take the most
+# common, and the earliest of equally common years.
+read_vector_atlas <- function() {
+  va <- read_csv("data/raw/VA_FULL_DATA_20250721.csv",
+                 col_types = cols(.default = "c")) %>%
+    filter(insecticide_resistance_data == "phenotypic")
+  study_citations <- va %>%
+    count(source_id, author, publication_year, article_title,
+          journal_title) %>%
+    arrange(source_id, desc(n), publication_year) %>%
+    distinct(source_id, .keep_all = TRUE) %>%
+    transmute(source_id,
+              citation = paste0(author, " (", publication_year, ") ",
+                                article_title, ". ", journal_title, "."))
+  va %>%
+    left_join(study_citations, by = "source_id")
+}
 
-
-
-# load data from public IR mapper discriminating assay data at species level
-# these are all Africa so no need for country subset
-ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_species.csv",
-                                         na = c("", "NA","NR","NF")) %>% 
-  # these were read in as characters and readxl is a pain to set column types
-  mutate(
-    across(
-      c(Latitude,
-        Longitude,
-        `No. mosquitoes dead`,
-        `No. mosquitoes tested`,
-        `Start year`),
-        as.numeric)
-  ) %>%
-  # subset to required columns
-  select(
-    `No. mosquitoes dead`,
-    `No. mosquitoes tested`,
-    `Start year`,
-    Latitude,
-    Longitude,
-    Species,
-    `Insecticide tested`,
-    `Insecticide class`,
-    `Concentration (%)`,
-    `Test protocol`,
-    Country,
-    `Percent mortality`,
-    `Site type`,
-    `Source 1 citation`
-  ) %>%
-  # drop multipoints for now
-  filter(`Site type` == "point") %>% 
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    `No. mosquitoes tested` = case_when(
-      is.na(`No. mosquitoes tested`) ~ infer_sample_size(`Percent mortality`),
-      .default = round(`No. mosquitoes tested`)
-    ), 
-    # compute the integer number that died, for model
-    `No. mosquitoes dead` = round(`No. mosquitoes tested` * `Percent mortality` / 100),
-    # change country name inconsistencies with mtm
-    Country = if_else(Country == "C\xf4te d\x92Ivoire",
-                      "Côte d’Ivoire",
-                      Country),
-    Country = if_else(Country == "Tanzania, United Republic of",
-                      "United Republic of Tanzania",
-                      Country),
-    Country = if_else(Country == "The Gambia",
-                      "Gambia",
-                      Country)
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(`Percent mortality`)
-  ) %>%
-  # standardise names
-  rename(
-    died = `No. mosquitoes dead`,
-    mosquito_number = `No. mosquitoes tested`,
-    year_start = `Start year`,
-    latitude = Latitude,
-    longitude = Longitude,
-    species = Species,
-    insecticide_type = `Insecticide tested`,
-    insecticide_class = `Insecticide class`,
-    concentration = `Concentration (%)`,
-    test_type = `Test protocol`,
-    country_name = Country,
-    mortality_adjusted = `Percent mortality`,
-    citation = `Source 1 citation`
-  ) %>% 
-  select(-`Site type`) %>% 
-  # add database name
-  mutate(source = "mapper_dis_species")
-
-# load data from public IR mapper discriminating assay data at complex level
-# these are all Africa so no need for country subset
-ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-subgroup.csv",
-                                         na = c("", "NA","NR","NF")) %>% 
-  # strip out invalid string in long lat
-  mutate(
-    Latitude = str_remove_all(Latitude, "\xa0"),
-    Longitude = str_remove_all(Longitude, "\xa0")
-  ) %>%
-  # these were read in as characters and readxl is a pain to set column types
-  mutate(
-    across(
-      c(Latitude,
-        Longitude,
-        `No. mosquitoes dead`,
-        `No. mosquitoes tested`,
-        `Start year`),
-      as.numeric)
-  ) %>%
-  # subset to required columns
-  select(
-    `No. mosquitoes dead`,
-    `No. mosquitoes tested`,
-    `Start year`,
-    Latitude,
-    Longitude,
-    `Complex/Subgroup`,
-    `Insecticide tested`,
-    `Insecticide class`,
-    `Concentration (%)`,
-    `Test protocol`,
-    Country,
-    `Percent mortality`,
-    `Site type`,
-    `Source 1 citation`
-  ) %>%
-  # drop multipoints for now
-  filter(`Site type` == "point") %>% 
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    `No. mosquitoes tested` = case_when(
-      is.na(`No. mosquitoes tested`) ~ infer_sample_size(`Percent mortality`),
-      .default = round(`No. mosquitoes tested`)
-    ), 
-    # compute the integer number that died, for model
-    `No. mosquitoes dead` = round(`No. mosquitoes tested` * `Percent mortality` / 100),
-    # change country name inconsistencies with mtm
-    Country = if_else(Country == "C\xf4te d\x92Ivoire",
-                      "Côte d’Ivoire",
-                      Country),
-    Country = if_else(Country == "Tanzania, United Republic of",
-                      "United Republic of Tanzania",
-                      Country),
-    Country = if_else(Country == "The Gambia",
-                      "Gambia",
-                      Country)
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(`Percent mortality`)
-  ) %>%
-  # standardise names
-  rename(
-    died = `No. mosquitoes dead`,
-    mosquito_number = `No. mosquitoes tested`,
-    year_start = `Start year`,
-    latitude = Latitude,
-    longitude = Longitude,
-    species = `Complex/Subgroup`,
-    insecticide_type = `Insecticide tested`,
-    insecticide_class = `Insecticide class`,
-    concentration = `Concentration (%)`,
-    test_type = `Test protocol`,
-    country_name = Country,
-    mortality_adjusted = `Percent mortality`,
-    citation = `Source 1 citation`
-  ) %>% 
-  select(-`Site type`) %>% 
-  # add database name
-  mutate(source = "mapper_dis_complex")
-
-# load data from public IR mapper intensity assay data at species level
-# these are all Africa so no need for country subset
-ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgroup.csv",
-                                  na = c("", "NA","NR","NF"),
-                                  locale=locale(encoding="latin1") # not sure why this is needed
-                                  ) %>% 
-  mutate(
-    Latitude = str_remove_all(Latitude, "\xa0"),
-    Longitude = str_remove_all(Longitude, "\xa0")
-  ) %>% 
-  # these were read in as characters and readxl is a pain to set column types
-  mutate(
-    across(
-      c(Latitude,
-        Longitude,
-        `No. mosquitoes dead`,
-        `No. mosquitoes tested`,
-        `Start year`),
-      as.numeric)
-  ) %>%
-  # subset to required columns
-  select(
-    `No. mosquitoes dead`,
-    `No. mosquitoes tested`,
-    `Start year`,
-    Latitude,
-    Longitude,
-    `Complex/Subgroup`,
-    `Insecticide tested`,
-    `Insecticide class`,
-    `Concentration (%)`,
-    `Test protocol`,
-    Country,
-    `Percent mortality`,
-    `Site type`,
-    `Source 1 citation`
-  ) %>%
-  # drop multipoints for now
-  filter(`Site type` == "point") %>% 
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    `No. mosquitoes tested` = case_when(
-      is.na(`No. mosquitoes tested`) ~ infer_sample_size(`Percent mortality`),
-      .default = round(`No. mosquitoes tested`)
-    ), 
-    # compute the integer number that died, for model
-    `No. mosquitoes dead` = round(`No. mosquitoes tested` * `Percent mortality` / 100),
-    # change country name inconsistencies with mtm
-    Country = if_else(Country == "C\xf4te d\x92Ivoire",
-                      "Côte d’Ivoire",
-                      Country),
-    Country = if_else(Country == "Côte d\u0092Ivoire",
-                      "Côte d’Ivoire",
-                      Country),
-    Country = if_else(Country == "Tanzania, United Republic of",
-                      "United Republic of Tanzania",
-                      Country),
-    Country = if_else(Country == "The Gambia",
-                      "Gambia",
-                      Country)
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(`Percent mortality`)
-  ) %>%
-  # standardise names
-  rename(
-    died = `No. mosquitoes dead`,
-    mosquito_number = `No. mosquitoes tested`,
-    year_start = `Start year`,
-    latitude = Latitude,
-    longitude = Longitude,
-    species = `Complex/Subgroup`,
-    insecticide_type = `Insecticide tested`,
-    insecticide_class = `Insecticide class`,
-    concentration = `Concentration (%)`,
-    test_type = `Test protocol`,
-    country_name = Country,
-    mortality_adjusted = `Percent mortality`,
-    citation = `Source 1 citation`
-  ) %>% 
-  select(-`Site type`) %>% 
-  # add database name
-  mutate(source = "mapper_int_complex")
-
-# load source IR mapper data, note these are in a different format and likely
-# contain additional data
-ir_mapper_source_2022 <- read_xlsx("data/raw/IR Mapper data August 2022.xlsx") %>% 
-  # enforce numeric column types
-  mutate(
-    across(
-      c(Latitude,
-        Longitude,
-        IR_Test_NumExposed,
-        IR_Test_mortality,
-        Mosquito_collection_Year_start,
-        Insecticide_dosage # coercing concentration to numeric would cause lots of NAs for non WHO bioassay entries due to units attached, we should deal with this later
-        ),
-      as.numeric)
-  ) %>%
-  # subset to required columns
-  select(
-    IR_Test_NumExposed,
-    Mosquito_collection_Year_start,
-    Latitude,
-    Longitude,
-    Vector_species,
-    Chemical_type,
-    Chemical_class,
-    Insecticide_dosage,
-    IR_Test_Method,
-    Country,
-    IR_Test_mortality,
-    Reference_Name
-  ) %>%
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    IR_Test_NumExposed = case_when(
-      is.na(IR_Test_NumExposed) ~ infer_sample_size(IR_Test_mortality),
-      .default = round(IR_Test_NumExposed)
-    ), 
-    # compute the integer number that died, for model
-    died = round(IR_Test_NumExposed * IR_Test_mortality / 100),
-    # change country name inconsistencies with mtm
-    Country = if_else(Country == "Cote d Ivoire",
-                      "Côte d’Ivoire",
-                      Country),
-    Country = if_else(Country == "United Republic of Tanzania",
-                      "Tanzania",
-                      Country),
-    Country = if_else(Country == "Sao tome and principe",
-                      "Sao Tome & Principe",
-                      Country)
-  ) %>%  
-  # subset to africa
-  filter(Country %in% country_region_lookup()$country_name) %>% 
-  # drop those where resistance isn't recorded, likely PCR assays
-  filter(
-    !is.na(IR_Test_mortality)
-  ) %>%
-  # standardise names
-  rename(
-    mosquito_number = IR_Test_NumExposed,
-    year_start = Mosquito_collection_Year_start,
-    latitude = Latitude,
-    longitude = Longitude,
-    species = Vector_species,
-    insecticide_type = Chemical_type,
-    insecticide_class = Chemical_class,
-    concentration = Insecticide_dosage,
-    test_type = IR_Test_Method,
-    country_name = Country,
-    mortality_adjusted = IR_Test_mortality,
-    citation = Reference_Name
-  ) %>% 
-  # add database name
-  mutate(source = "mapper_source_2022")
-
-# load source IR mapper data, note these are in a different format and likely
-# contain additional data, this is the bit extra since 2022
-ir_mapper_source_2024 <- read_xlsx("data/raw/IR_Mapper_Anopheles_data_2021_Sept_2024.xlsx") %>% 
-  # enforce numeric column types
-  mutate(
-    across(
-      c(latitude,
-        longitude,
-        `iR_Test_NumExposed/Tested`,
-        iR_Test_Mortality,
-        collection_Year_Start,
-        insecticide_Dosage # coercing concentration to numeric would cause lots of NAs for non WHO bioassay entries due to units attached, we should deal with this later
-      ),
-      as.numeric)
-  ) %>%
-  # subset to required columns
-  select(
-    `iR_Test_NumExposed/Tested`,
-    collection_Year_Start,
-    latitude,
-    longitude,
-    vector_Species,
-    chemical_Type,
-    chemical_Class,
-    insecticide_Dosage,
-    iR_Test_Method,
-    country,
-    iR_Test_Mortality,
-    reference_Name
-  ) %>%
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    `iR_Test_NumExposed/Tested` = case_when(
-      is.na(`iR_Test_NumExposed/Tested`) ~ infer_sample_size(iR_Test_Mortality),
-      .default = round(`iR_Test_NumExposed/Tested`)
-    ), 
-    # compute the integer number that died, for model
-    died = round(`iR_Test_NumExposed/Tested` * iR_Test_Mortality / 100),
-    # change country name inconsistencies with mtm
-    country = if_else(country == "Cote d Ivoire",
-                      "Côte d’Ivoire",
-                      country),
-    country = if_else(country == "United Republic of Tanzania",
-                      "Tanzania",
-                      country),
-    country = if_else(country == "Sao tome and principe",
-                      "Sao Tome & Principe",
-                      country)
-  ) %>%  
-  # subset to africa
-  filter(country %in% country_region_lookup()$country_name) %>% 
-  # drop those where resistance isn't recorded, likely PCR assays
-  filter(
-    !is.na(iR_Test_Mortality)
-  ) %>%
-  # standardise names
-  rename(
-    mosquito_number = `iR_Test_NumExposed/Tested`,
-    year_start = collection_Year_Start,
-    latitude = latitude,
-    longitude = longitude,
-    species = vector_Species,
-    insecticide_type = chemical_Type,
-    insecticide_class = chemical_Class,
-    concentration = insecticide_Dosage,
-    test_type = iR_Test_Method,
-    country_name = country,
-    mortality_adjusted = iR_Test_Mortality,
-    citation = reference_Name
-  ) %>% 
-  # add database name
-  mutate(source = "mapper_source_2024")
-  
-
-# load vector atlas
-
-ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:98) %>% 
-  # these were read in as characters and readxl is a pain to set column types
-  mutate(
-    across(
-      c(`latitude_ 1`,
-        `longitude_1`,
-        `mosquitoes tested_n`,
-        `percent mortality`),
-      as.numeric)
-  ) %>%
-  mutate(
-    # change country name inconsistencies with mtm
-    country = if_else(country == "cote divoire",
-                      "Côte d’Ivoire",
-                      country),
-    country = if_else(country == "c\xf4te d'ivoire",
-                      "Côte d’Ivoire",
-                      country),
-    country = if_else(country == "sao tome & principe",
-                      "Sao Tome and Principe",
-                      country),
-    country = if_else(country == "tanzania",
-                      "United Republic of Tanzania",
-                      country),
-    # fix incorrect class
-    `insecticide class` = if_else(`insecticide class` == "pyrethroid" &
-                                    `insecticide tested`== c("ddt"),
-                                  "organochlorines",
-                                  `insecticide class`),
-    `insecticide class` = if_else(`insecticide class` == "pyrethroid" &
-                                    `insecticide tested` == c("malathion"),
-                                  "organophosphates",
-                                  `insecticide class`)
-  ) %>% 
-  select(
-    `mosquitoes tested_n`,
-    `percent mortality`,
-    `mosquitoes dead_n`,
-    `year_start`,
-    `latitude_ 1`,
-    `longitude_1`,
-    species,
-    `insecticide tested`,
-    `insecticide class`,
-    `concentration_percent`,
-    `test protocol`,
-    country,
-    `area type`,
-    `citation_doi`
-  ) %>%
-  # drop multipoints for now
-  filter(`area type` == "point") %>% 
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    `mosquitoes tested_n` = case_when(
-      is.na(`mosquitoes tested_n`) ~ infer_sample_size(`percent mortality`),
-      .default = round(`mosquitoes tested_n`)
-    ), 
-    # compute the integer number that died, for model
-    `mosquitoes dead_n` = round(`mosquitoes tested_n` * `percent mortality` / 100)
-    # note 350 entries actually have neither # dead or # total, so this cannot be inferred
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(`percent mortality`)
-  ) %>%
-  # standardise names
-  rename(
-    died = `mosquitoes dead_n`,
-    mosquito_number = `mosquitoes tested_n`,
-    latitude = `latitude_ 1`,
-    longitude = `longitude_1`,
-    species = species,
-    insecticide_type = `insecticide tested`,
-    insecticide_class = `insecticide class`,
-    concentration = `concentration_percent`,
-    test_type = `test protocol`,
-    country_name = country,
-    mortality_adjusted = `percent mortality`,
-    citation = `citation_doi`
-  ) %>% 
-  select(-`area type`) %>% 
-  mutate(source = "va")   # add database name
-
-
-
-# read in updated VA data
-ir_va_africa_new <- read_csv("data/raw/VA_FULL_DATA_20250721.csv") %>% 
-  # these were read in as characters and readxl is a pain to set column types
-  # keep only bioassays
-  filter(insecticide_resistance_data == "phenotypic") %>% 
-  mutate(
-    across(
-      c(`latitude_1`,
-        `longitude_1`,
-        `mosquitoes_tested_n`,
-        `percent_mortality`),
-      as.numeric)
-  ) %>%
-  mutate(
-    # change country name inconsistencies with mtm
-    country = if_else(country == "cote divoire",
-                      "Côte d’Ivoire",
-                      country),
-    country = if_else(country == "central african republic",
-                      "CAR",
-                      country),
-    country = if_else(country == "sao tome & principe",
-                      "Sao Tome & Principe",
-                      country),
-    country = if_else(country == "dr congo",
-                      "DR Congo",
-                      country),
-    # fix incorrect class
-    `insecticide class` = if_else(`insecticide_class` == "pyrethroid" &
-                                    `insecticide_tested`== c("ddt"),
-                                  "organochlorines",
-                                  `insecticide_class`),
-    `insecticide_class` = if_else(`insecticide_class` %in% c("pyrethroid","carbamate") &
-                                    `insecticide_tested` == c("malathion"),
-                                  "organophosphates",
-                                  `insecticide_class`),
-    `insecticide_class` = if_else(is.na(`insecticide_class`) &
-                                    `insecticide_tested` == c("dieldrin"),
-                                  "organochlorines",
-                                  `insecticide_class`),
-    `insecticide_class` = if_else(`insecticide_class` == "carbamate"  &
-                                    `insecticide_tested` == c("fenitrothion"),
-                                  "organophosphate",
-                                  `insecticide_class`),
-    `insecticide_class` = if_else(`insecticide_class` == "carbamate"  &
-                                    `insecticide_tested` == c("pirimiphos_methyl"),
-                                  "organophosphate",
-                                  `insecticide_class`),
-    `insecticide_class` = if_else(is.na(`insecticide_class`)  &
-                                    `insecticide_tested` == c("pirimiphos_methyl"),
-                                  "organophosphate",
-                                  `insecticide_class`)
-  ) %>% 
-  select(
-    `percent_mortality`,
-    `mosquitoes_tested_n`,
-    mosquitoes_dead_n,
-    `year_start`,
-    `latitude_1`,
-    `longitude_1`,
-    species,
-    `insecticide_tested`,
-    `insecticide_class`,
-    `concentration_percent`,
-    `test_protocol`,
-    country,
-    `area_type`,
-    `citation_doi`
-  ) %>%
-  # drop multipoints for now
-  filter(`area_type` == "point") %>% 
-  mutate(
-    # impute the number of mosquitoes from mortality rates where needed
-    `mosquitoes_tested_n` = case_when(
-      is.na(`mosquitoes_tested_n`) ~ infer_sample_size(`percent_mortality`),
-      .default = round(`mosquitoes_tested_n`)
-    ), 
-    # compute the integer number that died, for model
-    `mosquitoes_dead_n` = round(`mosquitoes_tested_n` * `percent_mortality` / 100)
-  ) %>%  
-  # drop those where resistance isn't recorded, for some reason
-  filter(
-    !is.na(`percent_mortality`)
-  ) %>%
-  # drop those where the number of mosquitoes tested is 0 (should probably be
-  # NA)
-  filter(
-    mosquitoes_tested_n != 0
-  ) %>%
-  # standardise names
-  rename(
-    died = `mosquitoes_dead_n`,
-    mosquito_number = `mosquitoes_tested_n`,
-    latitude = `latitude_1`,
-    longitude = `longitude_1`,
-    species = species,
-    insecticide_type = `insecticide_tested`,
-    concentration = `concentration_percent`,
-    test_type = `test_protocol`,
-    country_name = country,
-    mortality_adjusted = `percent_mortality`,
-    citation = `citation_doi`
-  ) %>% 
-  select(-`area_type`) %>% 
-  mutate(source = "va_new")   # add database name
-
-
-
-# bind together data note the order matters here: species goes before complex so that when removing
-# duplicates we retain the highest taxonomic resolution possible
-ir_everything <- ir_va_africa_new %>% 
-  bind_rows(ir_dis_mtm_africa,
-            ir_int_mtm_africa,
-            ir_mapper_dis_species_africa,
-            ir_mapper_int_complex,
-            ir_mapper_dis_complex,
-            ir_mapper_source_2022,
-            ir_mapper_source_2024)
-
-# standardise the data
-ir_everything <- ir_everything %>% 
-  # convert graphical characters in Côte d'Ivoire to the format supported here
-  mutate(
-    country_name = iconv(country_name, to = "", sub = "byte"),
-    # align these for macOS, at least
-    country_name = case_when(
-      country_name == "c<f4>te d'ivoire" ~ "Côte d’Ivoire",
-      country_name == "C<f4>te d<92>Ivoire" ~ "Côte d’Ivoire",
-      .default = country_name
-    )
-  ) %>%
-  #standardise all non-species name characters to lower
-  mutate(
-    across(c("insecticide_type",
-             "insecticide_class",
-             "country_name"),
-           tolower)
-  ) %>% 
-  # standardise insecticide type nomenclature
-  mutate(
-    insecticide_type = if_else(insecticide_type == "alpha-cypermethrin",
-                               "alphacypermethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "lambda-cyhalothrin",
-                               "lambdacyhalothrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "pirimiphos_methyl",
-                               "pirimiphos-methyl",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "alphacypermethrin 5x",
-                               "alphacypermethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "alphacypermethrin 10x",
-                               "alphacypermethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "deltamethrin 10x",
-                               "deltamethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "deltamethrin10x",
-                               "deltamethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "deltamethrin5x",
-                               "deltamethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "lambda-cyhalothrin5x",
-                               "lambdacyhalothrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "lambda-cyhalothrin10x",
-                               "lambdacyhalothrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "permethrin 10x",
-                               "permethrin",
-                               insecticide_type),
-    insecticide_type = if_else(insecticide_type == "permethrin 5x",
-                               "permethrin",
-                               insecticide_type)
-  ) %>% 
-  # standardise insecticide class nomenclature
-  mutate(
-    insecticide_class = if_else(insecticide_class == "carbamates",
-                                "carbamate",
-                                insecticide_class),
-    insecticide_class = if_else(insecticide_class == "organochlorines",
-                                "organochlorine",
-                                insecticide_class),
-    insecticide_class = if_else(insecticide_class == "organophosphates",
-                                "organophosphate",
-                                insecticide_class),
-    insecticide_class = if_else(insecticide_class == "pyrethroids",
-                                "pyrethroid",
-                                insecticide_class),
-    insecticide_class = if_else(insecticide_class == "neonicotinoids",
-                                "neonicotinoid",
-                                insecticide_class)
-  ) %>% 
-  # fill in missing class from va data
-  mutate(
-    insecticide_class = if_else(insecticide_type == "deltamethrin" & is.na(insecticide_class),
-                                "pyrethroid",
-                                insecticide_class)
-  ) %>% 
-  # final boss now - standardise species nomenclature
-  # first get ride of all abbreviated genus name
-  mutate(species = gsub("An. ","Anopheles ",species),
-         # fix a missing genus name
-         species = if_else(species == "arabiensis",
-                           "Anopheles arabiensis",
-                           species),
-         species = if_else(species %in% c("stephensi",
-                                          "Anopheles stephensi sl"),
-                           "Anopheles stephensi",
-                           species),
-         # S and M molecular forms are An. gambiae s.s. and An. coluzzii
-         # (Coetzee et al. 2013); mixed S/M samples go to complex level
-         species = if_else(species %in% c("coluzzii (gambiae m)",
-                                          "coluzzii_gambiae_m form"),
-                           "Anopheles coluzzii",
-                           species),
-         species = if_else(species %in% c("gambiae (s)",
-                                          "gambiae_s form"),
-                           "Anopheles gambiae s.s.",
-                           species),
-         # standardise complex names
-         species = if_else(species %in% c("Funestus Subgroup",
-                                          "funestus",
-                                          "Anopheles funestus s.l.",
-                                          "Anopheles funestus sl",
-                                          "FUNESTUS COMPLEX"),
-                           "funestus complex",
-                           species),
-         species = if_else(species %in% c("Gambiae Complex",
-                                          "GAMBIAE COMPLEX",
-                                          "gambiae",
-                                          "coluzzi",
-                                          "Anopheles gambiae s.l.",
-                                          "Anopheles gambiae sl",
-                                          "gambiae (S_M)",
-                                          "gambiae_s form_m form",
-                                          "Anopheles coluzzii/gambiae"),
-                           "gambiae complex",
-                           species)
-  ) 
-
-# filter data
-ir_everything <- ir_everything %>% 
-  # drop CDC bioassay
-  mutate(
-    test_type = tolower(test_type)
-  ) %>% 
-  filter(grepl("who",test_type)) %>%
-  # filter out data without basic info
-  # na coords (from ir_mapper)
-  filter(!(is.na(latitude) | is.na(longitude))) %>% 
-  # filter out those without inferrable dead or total mosquito counts
-  # shouldn't be any here because of imputation, but just in case
-  filter(!(is.na(mosquito_number) | is.na(died))) %>% 
-  # filter out na years
-  filter(!(is.na(year_start))) %>% 
-  # filter out na species
-  filter(!(is.na(species))) %>% 
-  #filter out na concentration
-  filter(!(is.na(concentration)))
-  
-# check concentration and insecticide mapping
-type_concentrations <- ir_everything %>%
-  select(insecticide_type, concentration,source) %>%
-  group_by(insecticide_type) %>%
-  unique() %>%
-  arrange(insecticide_type)
-#View(type_concentrations)
-
-ir_everything <- ir_everything %>% 
-  # assign species to complexes for the purpose of deduplication
-  mutate(species_complex = if_else(species %in% c("gambiae complex",
-                                                  "Anopheles gambiae s.s.",
-                                                  "Anopheles arabiensis",
-                                                  "Anopheles coluzzii",
-                                                  "Anopheles merus",
-                                                  "Anopheles gambiae",
-                                                  "Anopheles quadriannulatus",
-                                                  "Anopheles gambiae/Anopheles coluzzii",
-                                                  "Anopheles gambiae ss"
+# each source: its database, how to read it, its own filters, and its columns.
+# Sources are listed in order of preference (supplement step 1), which chooses
+# a paper's version where versions tie (below) and the copy of a bioassay to
+# keep.
+sources <- list(
+  ir_mapper_extract("mapper_dis_species",
+                    "data/raw/2_standard-WHO-susc-test_species.csv",
+                    "Species"),
+  ir_mapper_extract("mapper_int_complex",
+                    "data/raw/5_intensity-bioassays_complex-subgroup.csv",
+                    "Complex/Subgroup"),
+  ir_mapper_extract("mapper_dis_complex",
+                    "data/raw/1_standard-WHO-susc-test_complex-subgroup.csv",
+                    "Complex/Subgroup"),
+  list(
+    source = "va_new",
+    database = "Vector Atlas",
+    read = read_vector_atlas,
+    # records at a point, with a positive number of mosquitoes if recorded
+    keep = function(d) {
+      d %>%
+        filter(area_type == "point",
+               is.na(mosquitoes_tested_n) |
+                 as.numeric(mosquitoes_tested_n) != 0)
+    },
+    columns = c(citation = "citation", link = "citation_doi", site = "site",
+                country_name = "country", latitude = "latitude_1",
+                longitude = "longitude_1", year_start = "year_start",
+                year_end = "year_end",
+                month = "month_start", species = "species",
+                generation = "generation",
+                insecticide_type = "insecticide_tested",
+                concentration = "concentration_percent",
+                test_type = "test_protocol",
+                mosquito_number = "mosquitoes_tested_n",
+                mortality_adjusted = "percent_mortality",
+                synergist = "synergist_tested",
+                intensity = "intensity_multiplier")
   ),
-  "gambiae complex",
-  NA),
-  species_complex = if_else(species %in% c("funestus complex",
-                                           "Anopheles funestus s.s.",
-                                           "Anopheles funestus",
-                                           "Anopheles funestus ss"
+  list(
+    source = "mtm_dis",
+    database = "MTM",
+    read = function() {
+      read_xlsx(
+        "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
+        sheet = "Data", col_types = "text")
+    },
+    # drop the filled mortalities (above) and a record in the Americas
+    keep = function(d) {
+      d %>%
+        filter(!ID %in% mtm_filled_mortality_ids,
+               as.numeric(LONGITUDE) > -50)
+    },
+    columns = c(mtm_columns, species = "SPECIES")
   ),
-  "funestus complex",
-  species_complex)
-  )
-
-# fix insecticide type and country names
-ir_everything <- ir_everything %>%
-  mutate(
-    insecticide_type = case_when(
-      insecticide_type == "deltamethrin" ~ "Deltamethrin",
-      insecticide_type == "permethrin" ~ "Permethrin",
-      insecticide_type == "ddt" ~ "DDT",
-      insecticide_type == "bendiocarb" ~ "Bendiocarb",
-      insecticide_type == "lambdacyhalothrin" ~ "Lambda-cyhalothrin",
-      insecticide_type == "pirimiphos-methyl" ~ "Pirimiphos-methyl",
-      insecticide_type == "fenitrothion" ~ "Fenitrothion",
-      insecticide_type == "alphacypermethrin" ~ "Alpha-cypermethrin",
-      insecticide_type == "malathion" ~ "Malathion",
-      insecticide_type == "carbosulfan" ~ "Carbosulfan",
-      insecticide_type == "chlorfenapyr" ~ "Chlorfenapyr",
-      insecticide_type == "propoxur" ~ "Propoxur",
-      insecticide_type == "etofenprox" ~ "Etofenprox",
-      insecticide_type == "dieldrin" ~ "Dieldrin",
-      insecticide_type == "cyfluthrin" ~ "Cyfluthrin",
-      insecticide_type == "clothianidin" ~ "Clothianidin",
-      insecticide_type == "chlorpyrifos-methyl" ~ "Chlorpyrifos-methyl",
-      .default = NA
-    ),
-    insecticide_class = case_when(
-      insecticide_class == "pyrethroid" ~ "Pyrethroids",
-      insecticide_class == "organophosphate" ~ "Organophosphates",
-      insecticide_class == "organochlorine" ~ "Organochlorines",
-      insecticide_class == "carbamate" ~ "Carbamates",
-      insecticide_class == "neonicotinoid" ~ "Neonicotinoids",
-      insecticide_class == "pyriproxyfen" ~ "Pyriproxyfen",
-      insecticide_class == "pyrroles" ~ "Pyrroles",
-      .default = NA
-    ),
-    # capitalise countries again, then fix up errors
-    country_name = str_to_title(country_name),
-    country_name = str_replace(country_name, "D’ivoire", "d’Ivoire"),
-    country_name = str_replace(country_name, " And ", " and "),
-    country_name = str_replace(country_name, " Of ", " of "),
-    country_name = str_replace(country_name, " The ", " the "),
-    # shorten some country names for plotting
-    country_name = case_when(
-      country_name == "United Republic of Tanzania" ~ "Tanzania",
-      country_name == "Democratic Republic of the Congo" ~ "DR Congo",
-      country_name == "Dr Congo" ~ "DR Congo",
-      country_name == "Central African Republic" ~ "CAR",
-      country_name == "Car" ~ "CAR",
-      country_name == "Sao Tome and Principe" ~ "Sao Tome & Principe",
-      country_name == "Guinea Bissau" ~ "Guinea-Bissau",
-    .default = country_name
-    )
-  ) %>%
-  # drop any missing the insecticide type
-  filter(
-    !is.na(insecticide_type)
-  )
-
-# deduplicate based on unique criteria
-ir_distinct <- ir_everything %>% 
-  distinct(year_start,
-           lat_round = round(latitude,
-                             digits = 1),
-           lon_round = round(longitude,
-                             digits = 1),
-           species_complex,
-           insecticide_type,
-           mosquito_number,
-           died,
-           country_name, 
-           concentration,
-           mortality_round = round(mortality_adjusted, digits = 0),
-           .keep_all = TRUE)
-
-# The exact match above misses copies of the same bioassay held by more than one
-# database (MTM, IR Mapper, Vector Atlas), because one key often differs between
-# the copies: coordinates rounded either side of a 0.1 degree boundary, a
-# mislabelled concentration (e.g. 0.75% deltamethrin, permethrin's dose), or
-# Abbott's correction applied in one source only. See issue #31. So we match
-# records more loosely, on the model pixel, year, insecticide and the exact
-# result (died and mosquito_number); matched records are at most about 6.6 km
-# apart (one 1/24 degree pixel). At 0% or 100% mortality, where identical
-# results are common in genuine replicates (e.g. 100 of 100 mosquitoes dying at
-# nearby sites), the species and concentration must match too.
-#
-# In each match set the k-th preferred record from each database is matched to
-# the k-th preferred record from each other database, and the most preferred
-# record of each such group is kept. So matches within a database are kept, as
-# they may be separate tests: a set with two MTM records and one Vector Atlas
-# record keeps two. In order, the preferences are for: the most common
-# concentration of that insecticide (so the record stays in the modelled
-# subset, and the other copy is probably mislabelled), an assigned species
-# complex, a species-level identification, and then the order of the rows
-# (Vector Atlas, MTM, IR Mapper).
-#
-# Each IR Mapper release counts as its own database here: the analysis-ready
-# extracts (mapper_dis_*, mapper_int_complex), the August 2022 download
-# (mapper_source_2022) and the 2024 download (mapper_source_2024). The 2022
-# download repeats records in the extracts under a short citation (e.g.
-# "Ochomo et al. 2014"), often with a different concentration. See issue #53.
-
-# The rows of the records in `keyed` (ir_distinct's records with a model pixel,
-# with their row, database, cell and modal_concentration) to drop as
-# cross-database duplicates, by the rule above
-cross_database_duplicates <- function(keyed) {
-  keyed %>%
-    mutate(
-      extreme = died == 0 | died == mosquito_number,
-      # only require these to match at 0% or 100%
-      species_key = if_else(extreme, species, NA),
-      concentration_key = if_else(extreme, concentration, NA)
-    ) %>%
-    group_by(cell, year_start, insecticide_type, died, mosquito_number,
-             species_key, concentration_key) %>%
-    arrange(desc(modal_concentration),
-            is.na(species_complex),
-            species %in% c("gambiae complex", "funestus complex"),
-            row,
-            .by_group = TRUE) %>%
-    group_by(database, .add = TRUE) %>%
-    mutate(k = row_number()) %>%
-    group_by(cell, year_start, insecticide_type, died, mosquito_number,
-             species_key, concentration_key, k) %>%
-    filter(row != first(row)) %>%
-    pull(row)
-}
-
-# The first author's surname and the publication year of each citation, e.g.
-# "dabire 2009", or NA where either can't be found, the citation is a DOI, or
-# its first word is generic ("Unpublished", "Personal communication", "pers.
-# comm."). The surname is the citation's first word, ASCII-transliterated and
-# in lower case. The year is the first of: "et al. YYYY", "(YYYY)", the
-# journal year in Vancouver style (a year, optionally with month and day,
-# followed by ";volume"), or else any 19xx or 20xx.
-citation_author_year <- function(citation) {
-  x <- str_squish(stringi::stri_trans_general(citation, "Latin-ASCII"))
-  is_doi <- grepl("^(doi:\\s*|https?://(dx\\.)?doi\\.org/)?10\\.\\d{4,}/", x,
-                  ignore.case = TRUE)
-  is_generic <- grepl("^(unpublished|personal communication|pers\\.? comm)",
-                      x, ignore.case = TRUE)
-  surname <- str_match(x, "^([A-Za-z][A-Za-z'\\-]+)")[, 2]
-  months <- "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
-  year <- coalesce(
-    str_match(x, "et al\\.*,?\\s*\\(?((19|20)\\d{2})")[, 2],
-    str_match(x, "\\(((19|20)\\d{2})[a-z]?\\)")[, 2],
-    str_match(x, paste0("\\b((19|20)\\d{2})[a-z]?(\\s+", months,
-                        "(\\s+\\d{1,2})?)?\\s*;"))[, 2],
-    str_match(x, "\\b((19|20)\\d{2})\\b")[, 2]
-  )
-  if_else(is_doi | is_generic | is.na(surname) | is.na(year),
-          NA_character_,
-          paste(tolower(surname), year))
-}
-
-mask <- rast("data/clean/raster_mask.tif")
-keyed <- ir_distinct %>%
-  mutate(
-    row = row_number(),
-    database = if_else(source %in% c("mapper_source_2022",
-                                     "mapper_source_2024"),
-                       source,
-                       sub("_.*", "", source)),
-    cell = terra::cellFromXY(mask, cbind(longitude, latitude))
-  ) %>%
-  group_by(insecticide_type) %>%
-  mutate(
-    modal_concentration = concentration == sample_mode(concentration)
-  ) %>%
-  ungroup() %>%
-  filter(!is.na(cell))
-
-# Some sources hold a bioassay split by species (e.g. An. arabiensis and An.
-# gambiae s.s.) and another, or the same, source holds it summed to complex
-# level. We drop a complex-level record when its died and mosquito_number equal
-# exactly the sums over the species-level records (of that complex) of one
-# source and citation at the same pixel, year, insecticide and concentration,
-# keeping the species-level records. In October 2026, comparing against
-# species-level records a year earlier or later found no such matches, so
-# these are not coincidences. See issue #53.
-aggregated_copies <- function(keyed) {
-  species_sums <- keyed %>%
-    filter(!species %in% c("gambiae complex", "funestus complex")) %>%
-    group_by(cell, year_start, insecticide_type, concentration,
-             species_complex, source, citation) %>%
-    filter(n() > 1) %>%
-    summarise(
-      died_sum = sum(died),
-      mosquito_number_sum = sum(mosquito_number),
-      .groups = "drop"
-    )
-  keyed %>%
-    filter(species %in% c("gambiae complex", "funestus complex")) %>%
-    inner_join(species_sums,
-               by = c("cell", "year_start", "insecticide_type",
-                      "concentration", "species_complex"),
-               relationship = "many-to-many") %>%
-    filter(died == died_sum,
-           mosquito_number == mosquito_number_sum) %>%
-    pull(row) %>%
-    unique()
-}
-
-duplicate_rows <- cross_database_duplicates(keyed)
-aggregated_rows <- aggregated_copies(keyed)
-cat(length(duplicate_rows), "cross-database duplicates and",
-    length(aggregated_rows),
-    "complex-level sums of species-level records dropped\n")
-
-# every set of two or more records matched on pixel, year, insecticide and
-# result, for checking: the within-database matches are the sets with a
-# database more than once, and the concentration mismatches those with more
-# than one concentration
-dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
-keyed %>%
-  group_by(cell, year_start, insecticide_type, died, mosquito_number) %>%
-  filter(n() > 1) %>%
-  mutate(set = cur_group_id()) %>%
-  ungroup() %>%
-  mutate(dropped = row %in% duplicate_rows) %>%
-  arrange(set, row) %>%
-  select(set, database, source, citation, longitude, latitude, year_start,
-         insecticide_type, concentration, species, mosquito_number, died,
-         mortality_adjusted, dropped) %>%
-  write.csv("outputs/review/bioassay_match_sets.csv", row.names = FALSE)
-
-ir_distinct <- ir_distinct %>%
-  filter(!row_number() %in% union(duplicate_rows, aggregated_rows))
-
-
-
-# # map distinct records for checking if any remaining duplicates
-# library(mapview)
-# library(sf)
-# jitter_coord <- function(x) jitter(x,factor = 0.1)
-# 
-# ir_distinct_sf <- st_as_sf(ir_distinct %>% 
-#                              mutate(
-#                                across(
-#                                  c("longitude","latitude"),
-#                                  jitter_coord
-#                                  )
-#                              ),
-#                            coords = c("longitude","latitude"),
-#                            crs = st_crs(4326))
-# 
-# mapview(ir_distinct_sf,
-#         zcol = "insecticide_type")
-
-# # group by nearby matching points and check if nearby points might be duplicates  
-# ir_distinct %>%
-#   group_by(year_start, 
-#            died, 
-#            insecticide_type,
-#            mortality_round,
-#            species_complex,
-#            country_name,
-#            concentration,
-#            round(lat_round,1),
-#            round(lon_round,1),
-#            mosquito_number) %>% 
-#   count() %>%
-#   arrange(desc(n)) %>%
-#   View()
-
-
-# most of the remaining close by points with identical responses have 100% mortality, they are
-# likely legit separate observations
-
-# subset to just gambiae complex
-ir_distinct_gambiae <- ir_distinct %>% filter(species_complex == "gambiae complex")
-# rid columns used in dedup
-ir_distinct_gambiae <- ir_distinct_gambiae %>% 
-  select(-c(lat_round:mortality_round))
-
-# check the country labels against the coordinates. The model takes each
-# pixel's country (and so its initial condition) from this label, so the label
-# and the pixel have to agree. See issue #13. Three rules, in order:
-#
-# 1. A record at rounded coordinates that falls outside its labelled country,
-# but whose rounding box (the area the rounding implies) overlaps that country,
-# is moved into it: to the pixel of the labelled country nearest the recorded
-# point within the box, or failing that the nearest pixel of that country
-# anywhere. Its coordinates become that pixel's centre, so the model puts it
-# there. "Rounded" is at most one decimal place in both coordinates, a box of
-# +/- 0.5 or 0.05 degrees. In practice only whole degrees trigger it: 76 records
-# (6 locations) are at whole degrees and 256 at one decimal place, and the only
-# rounded records outside their country are 47 in Rwanda at (29, -2), (29, -3)
-# and (30, -1), 16-36 km into DR Congo and Uganda. Two decimals is +/- 0.5 km,
-# well inside the tolerance of rule 2.
-#
-# 2. Otherwise a label is kept if the point is within country_tolerance_km of
-# the labelled country, and else relabelled to the country it lies in. Of the
-# 148 other records in a neighbouring country's polygon, 139 are within 3.5 km
-# of their labelled country's border (GADM generalisation and coordinate
-# rounding) and 9 are at 7.8 km or more, with nothing in between.
-#
-# 3. Records outside every polygon take their nearest country if within the
-# tolerance (106 of 126, all within 4 km of their label) and are dropped
-# otherwise (20 records 40 km offshore of Madagascar, outside the mask).
-#
-# Records labelled with a country that has no mask cells, and so no border
-# polygon (8 in Cabo Verde), are left alone.
-country_tolerance_km <- 5
-country_borders <- readRDS("data/clean/country_borders.RDS")
-country_raster <- rast("data/clean/country_raster.tif")
-
-record_points <- ir_distinct_gambiae %>%
-  st_as_sf(coords = c("longitude", "latitude"),
-           crs = st_crs(country_borders))
-polygon_index <- st_intersects(record_points, country_borders) %>%
-  vapply(function(i) i[1], integer(1))
-nearest_index <- st_nearest_feature(record_points, country_borders)
-label_index <- match(ir_distinct_gambiae$country_name,
-                     country_borders$country_name)
-km_from_label <- as.numeric(st_distance(record_points,
-                                        country_borders[label_index, ],
-                                        by_element = TRUE)) / 1000
-km_from_nearest <- as.numeric(st_distance(record_points,
-                                          country_borders[nearest_index, ],
-                                          by_element = TRUE)) / 1000
-country_geometry <- country_borders$country_name[
-  ifelse(is.na(polygon_index), nearest_index, polygon_index)]
-
-# half-width of the rounding box in degrees, from the number of decimal places
-# of the less precise coordinate; NA if more than one decimal place
-decimal_places <- function(x) {
-  places <- rep(NA_integer_, length(x))
-  for (d in 1:0) {
-    places[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-6] <- d
-  }
-  places
-}
-rounding_places <- pmin(decimal_places(ir_distinct_gambiae$longitude),
-                        decimal_places(ir_distinct_gambiae$latitude))
-box_half_width <- 0.5 * 10 ^ -rounding_places
-
-box_overlaps_label <- rep(FALSE, nrow(ir_distinct_gambiae))
-candidates <- which(!is.na(box_half_width) & !is.na(label_index) &
-                      km_from_label > 0)
-for (i in candidates) {
-  box <- st_as_sfc(st_bbox(c(
-    xmin = ir_distinct_gambiae$longitude[i] - box_half_width[i],
-    xmax = ir_distinct_gambiae$longitude[i] + box_half_width[i],
-    ymin = ir_distinct_gambiae$latitude[i] - box_half_width[i],
-    ymax = ir_distinct_gambiae$latitude[i] + box_half_width[i]),
-    crs = st_crs(country_borders)))
-  box_overlaps_label[i] <- lengths(st_intersects(
-    box, country_borders[label_index[i], ])) > 0
-}
-
-# the pixel of the labelled country to move each rounded record to, per
-# location
-country_cells <- data.frame(cell = cells(country_raster)) %>%
-  mutate(country_name = as.character(
-           terra::extract(country_raster, cell)$country_name)) %>%
-  bind_cols(as.data.frame(xyFromCell(country_raster, .$cell)))
-move_to <- ir_distinct_gambiae %>%
-  mutate(half_width = box_half_width) %>%
-  filter(box_overlaps_label) %>%
-  distinct(longitude, latitude, country_name, half_width)
-move_to$new_longitude <- NA_real_
-move_to$new_latitude <- NA_real_
-move_to$within_box <- NA
-for (j in seq_len(nrow(move_to))) {
-  options <- country_cells %>%
-    filter(country_name == move_to$country_name[j])
-  in_box <- abs(options$x - move_to$longitude[j]) <= move_to$half_width[j] &
-    abs(options$y - move_to$latitude[j]) <= move_to$half_width[j]
-  move_to$within_box[j] <- any(in_box)
-  if (any(in_box)) {
-    options <- options[in_box, ]
-  }
-  km <- as.numeric(st_distance(
-    st_as_sf(move_to[j, ], coords = c("longitude", "latitude"),
-             crs = st_crs(country_borders)),
-    st_as_sf(options, coords = c("x", "y"),
-             crs = st_crs(country_borders)))) / 1000
-  move_to$new_longitude[j] <- options$x[which.min(km)]
-  move_to$new_latitude[j] <- options$y[which.min(km)]
-}
-move_index <- match(paste(ir_distinct_gambiae$longitude,
-                          ir_distinct_gambiae$latitude,
-                          ir_distinct_gambiae$country_name),
-                    paste(move_to$longitude, move_to$latitude,
-                          move_to$country_name))
-move_index[!box_overlaps_label] <- NA
-
-country_check <- tibble(
-  country_label = ir_distinct_gambiae$country_name,
-  country_geometry = country_geometry,
-  km_from_label = km_from_label,
-  km_outside_polygons = ifelse(is.na(polygon_index), km_from_nearest, 0),
-  new_longitude = move_to$new_longitude[move_index],
-  new_latitude = move_to$new_latitude[move_index],
-  new_pixel_within_box = move_to$within_box[move_index],
-  action = case_when(
-    is.na(label_index) ~ "keep",
-    box_overlaps_label ~ "move",
-    km_from_label <= country_tolerance_km ~ "keep",
-    km_outside_polygons <= country_tolerance_km ~ "relabel",
-    .default = "drop"
+  list(
+    source = "mtm_int",
+    database = "MTM",
+    read = function() {
+      read_xlsx(
+        "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20261005.xlsx",
+        sheet = "Data", col_types = "text")
+    },
+    keep = function(d) filter(d, as.numeric(LONGITUDE) > -50),
+    columns = c(mtm_columns, species = "VECTOR_SPECIES")
+  ),
+  list(
+    source = "mapper_source_2022",
+    database = "IR Mapper 2022",
+    read = function() {
+      read_xlsx("data/raw/IR Mapper data August 2022.xlsx", col_types = "text")
+    },
+    # its records cited to Moyes et al. 2019 are the IR Mapper extracts' own
+    keep = function(d) filter(d, !Reference_Name %in% "Moyes et al. 2019"),
+    columns = c(citation = "Reference_Name", link = "URL", site = "Locality",
+                country_name = "Country", latitude = "Latitude",
+                longitude = "Longitude",
+                year_start = "Mosquito_collection_Year_start",
+                year_end = "Mosquito_collection_year_end",
+                species = "Vector_species", insecticide_type = "Chemical_type",
+                concentration = "Insecticide_dosage",
+                test_type = "IR_Test_Method",
+                mosquito_number = "IR_Test_NumExposed",
+                mortality_adjusted = "IR_Test_mortality")
+  ),
+  list(
+    source = "mapper_source_2024",
+    database = "IR Mapper 2024",
+    read = function() {
+      read_xlsx("data/raw/IR_Mapper_Anopheles_data_2021_Sept_2024.xlsx",
+                col_types = "text")
+    },
+    keep = identity,
+    columns = c(citation = "reference_Name", link = "url", site = "locality",
+                country_name = "country", latitude = "latitude",
+                longitude = "longitude", year_start = "collection_Year_Start",
+                year_end = "collection_Year_End",
+                species = "vector_Species", insecticide_type = "chemical_Type",
+                concentration = "insecticide_Dosage",
+                test_type = "iR_Test_Method",
+                mosquito_number = "iR_Test_NumExposed/Tested",
+                mortality_adjusted = "iR_Test_Mortality")
   )
 )
 
+# The paper each citation refers to (supplement step 2), found by
+# R/resolve_citations.R from the citation's DOI, PubMed ID, title, or first
+# author and year, or by manual review, and kept in
+# review/bioassay_citations.csv: a DOI, else a PubMed ID, else the paper's
+# first author, year and title. Manual review found some citations to be
+# reports (`method` "report").
+resolved_citations <- read_csv("review/bioassay_citations.csv",
+                               col_types = cols(.default = "c"), na = "") %>%
+  filter(!method %in% c("unresolved", "ambiguous", "link conflict")) %>%
+  select(database, citation, link, resolved = paper, method)
+
+bioassays <- lapply(sources, read_bioassay_source) %>%
+  bind_rows() %>%
+  mutate(
+    record = row_number(),
+    source_rank = match(source, map_chr(sources, "source")),
+    country_name = standardise_country(country_name),
+    insecticide_type = standardise_insecticide(insecticide_type),
+    insecticide_class = insecticide_class_of(insecticide_type),
+    species = standardise_species(species),
+    # a citation's first author and year of publication, and whether it is a
+    # paper (is_paper_citation(); see one version of each paper, below)
+    label = coalesce(citation_author_year(citation), citation),
+    is_paper = is_paper_citation(citation),
+    # the years a test ran: one year where no end year is given (as in MTM),
+    # or where the end year is before the start
+    year_end = if_else(is.na(year_end) | year_end < year_start, year_start,
+                       year_end),
+    mosquito_number = round(mosquito_number),
+    n_recorded = !is.na(mosquito_number)
+  )
+
+# A paper's citations are one paper (`paper`); a citation the table doesn't
+# resolve keeps its first author and year. Other citations are their own text.
+# A personal communication counts as its author's paper of that year in that
+# country, where there is one (supplement step 7).
+bioassays <- bioassays %>%
+  left_join(resolved_citations, by = c("database", "citation", "link")) %>%
+  mutate(is_paper = is_paper & !method %in% "report",
+         paper = if_else(is_paper, coalesce(resolved, paste("label:", label)),
+                         coalesce(citation, "")))
+authors_papers <- bioassays %>%
+  filter(is_paper) %>%
+  distinct(label, country_name, paper) %>%
+  group_by(label, country_name) %>%
+  filter(n() == 1) %>%
+  ungroup() %>%
+  rename(authors_paper = paper)
+bioassays <- bioassays %>%
+  left_join(authors_papers, by = c("label", "country_name")) %>%
+  mutate(as_paper = is_personal_communication(citation) & !is.na(authors_paper),
+         paper = if_else(as_paper, authors_paper, paper),
+         is_paper = is_paper | as_paper) %>%
+  select(-resolved, -method, -authors_paper, -as_paper)
+
+# ---- select records ----
+
+# Each step keeps the records meeting a condition, and counts by source the
+# records it removes
+attrition <- count(bioassays, source, name = "read")
+keep_records <- function(records, condition, step) {
+  kept <- filter(records, {{ condition }})
+  removed <- anti_join(records, kept, by = "record") %>%
+    count(source, name = step)
+  attrition <<- attrition %>%
+    left_join(removed, by = "source") %>%
+    mutate(across(all_of(step), ~ coalesce(.x, 0L)))
+  kept
+}
+
+# Vector Atlas gives a test's synergist (e.g. PBO) and its intensity (e.g. 5 or
+# 10 times the discriminating concentration) in their own columns, with the
+# insecticide's base concentration, so a synergist or intensity test would
+# look like a standard test. The other databases give no synergist tests, and
+# give intensity tests at their own concentrations.
+bioassays <- bioassays %>%
+  keep_records(!is.na(country_name), "not in Africa") %>%
+  keep_records(grepl("who", tolower(test_type)) &
+                 !grepl("bottle|larval|synergist", tolower(test_type)),
+               "not a WHO tube test") %>%
+  keep_records((is.na(synergist) | tolower(synergist) == "none") &
+                 (is.na(intensity) | intensity == "1"),
+               "synergist or intensity test") %>%
+  keep_records(!is.na(latitude) & !is.na(longitude) & !is.na(year_start) &
+                 !is.na(concentration) & !is.na(mortality_adjusted) &
+                 !is.na(insecticide_type),
+               "missing a field") %>%
+  keep_records(species %in% gambiae_complex_species,
+               "not An. gambiae complex") %>%
+  # a location given only to whole degrees (+/- 55 km) is too coarse for the
+  # models' 5 km pixels (supplement step 3)
+  keep_records(latitude != round(latitude) | longitude != round(longitude),
+               "located only to whole degrees")
+
+# the country labels must agree with the coordinates (supplement step 3); see
+# check_country_labels()
+country_check <- check_country_labels(bioassays)
 dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
-ir_distinct_gambiae %>%
-  select(longitude, latitude, year_start, insecticide_type, source, citation) %>%
+bioassays %>%
+  select(longitude, latitude, year_start, insecticide_type, source,
+         citation) %>%
   bind_cols(country_check) %>%
   filter(action != "keep") %>%
   write.csv("outputs/review/bioassay_country_relabels.csv", row.names = FALSE)
-print(count(country_check, action, country_label, country_geometry))
+bioassays <- bioassays %>%
+  mutate(country_name = if_else(country_check$action == "relabel",
+                                country_check$country_geometry,
+                                country_name)) %>%
+  keep_records(country_check$action != "drop", "far from its country") %>%
+  left_join(country_region_lookup(), by = "country_name")
 
-ir_distinct_gambiae <- ir_distinct_gambiae %>%
+# map pixels, which the sums of species-level records (below) are matched on
+mask <- rast("data/clean/raster_mask.tif")
+bioassays <- bioassays %>%
+  mutate(cell = terra::cellFromXY(mask, cbind(longitude, latitude))) %>%
+  keep_records(!is.na(cell), "outside the map")
+
+# ---- the number of mosquitoes, and proportions ----
+
+# Where the number of mosquitoes isn't recorded we take the number closest to
+# 100 that gives a whole number dead, or 100 if none between 50 and 200 does
+# (infer_sample_size()). Copies are found from the recorded numbers only
+# (n_recorded), below.
+bioassays <- bioassays %>%
   mutate(
-    country_name = if_else(country_check$action == "relabel",
-                           country_check$country_geometry,
-                           country_name),
-    longitude = if_else(country_check$action == "move",
-                        country_check$new_longitude,
-                        longitude),
-    latitude = if_else(country_check$action == "move",
-                       country_check$new_latitude,
-                       latitude)
+    mosquito_number = replace(
+      mosquito_number, !n_recorded,
+      infer_sample_size(mortality_adjusted[!n_recorded])),
+    died = round(mosquito_number * mortality_adjusted / 100)
   ) %>%
-  filter(country_check$action != "drop")
+  # a positive mortality that gives no dead mosquito is an error: a proportion
+  # read as a percentage, e.g. 1.0 for 100% (#60), or a number dead, e.g. 3
+  # of 3 or 4
+  keep_records(!(died == 0 & mortality_adjusted > 0),
+               "positive mortality below one mosquito")
 
-# add on region information
-ir_distinct_gambiae <- ir_distinct_gambiae %>%
-  left_join(
-    country_region_lookup(),
-    by = "country_name"
-  )
+# ---- copies of the same bioassay ----
 
-# A label for each study, to model noise shared by the bioassays of a study. The
-# databases cite the same paper differently, e.g. "Dabire KR, Diabate A, ...
-# 2009;103(11):1113-20.", "Dabire et al. 2009" and "Dabire et al. (2009)
-# Distribution of ...", so we label a study by the first author's surname and
-# the publication year parsed from the citation, within a country. Where none
-# parses (DOIs, and institutional or missing citations such as "Ministry of
-# Health"), the citation itself is used, within a country. Splitting by country
-# stops these labels, and personal communications of multi-country datasets,
-# pooling surveys across countries. See issue #53.
-ir_distinct_gambiae <- ir_distinct_gambiae %>%
-  mutate(
-    study = paste(coalesce(citation_author_year(citation), citation),
-                  country_name,
-                  sep = ", ")
-  )
+# the citations and their records, for R/resolve_citations.R
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+bioassays %>%
+  group_by(database, citation, link) %>%
+  summarise(records = n(),
+            countries = paste(sort(unique(country_name)), collapse = "+"),
+            sites = paste(head(names(sort(table(site), decreasing = TRUE)), 10),
+                          collapse = "|"),
+            years = paste(range(year_start), collapse = "-"),
+            results = paste(unique(paste(insecticide_type, year_start,
+                                         mosquito_number, died)), collapse = ";"),
+            .groups = "drop") %>%
+  write_excel_csv("outputs/review/bioassay_citations.csv", na = "")
+unresolved <- bioassays %>%
+  filter(is_paper_citation(citation)) %>%
+  anti_join(resolved_citations, by = c("database", "citation", "link")) %>%
+  distinct(database, citation, link)
+if (nrow(unresolved) > 0) {
+  warning(nrow(unresolved), " paper citations aren't resolved in ",
+          "review/bioassay_citations.csv; run R/resolve_citations.R")
+}
 
-# check contributions from each database
-table(ir_distinct_gambiae$source) %>% sort(decreasing = TRUE)
+# A version is one database's records of one paper, or of one other citation
+bioassays <- mutate(bioassays, version_key = paste(database, paper))
 
-# print out some diagnostic checks for key columns
-summary(ir_distinct_gambiae$concentration)
-table(ir_distinct_gambiae$insecticide_class %>% as.factor()) %>% sort
-table(ir_distinct_gambiae$insecticide_type %>% as.factor()) %>% sort
-table(ir_distinct$species %>% as.factor()) %>% sort
+# A paper repeated in a download (supplement step 6): two records of a version
+# in one download are repeats if they agree in every field the prep reads;
+# where at least half of its records in the download are repeats, one of each
+# is kept
+bioassays <- bioassays %>%
+  mutate(test = paste(name_key(coalesce(site, "")), cell, year_start, year_end,
+                      month, generation, species, insecticide_type,
+                      concentration, test_type, mosquito_number, died)) %>%
+  group_by(source, version_key) %>%
+  add_count(test, name = "copies") %>%
+  mutate(repeated = mean(copies > 1) >= 0.5 & duplicated(test)) %>%
+  ungroup() %>%
+  select(-test, -copies) %>%
+  keep_records(!repeated, "paper repeated in a download")
 
-# tabulate canonical insecticide classification and correct errors
-insecticide_class_type_canon <- table(ir_distinct_gambiae$insecticide_type,ir_distinct_gambiae$insecticide_class) %>% 
-  as_tibble(.name_repair = "unique") %>% 
-  rename(type = ...1, class = ...2) %>% 
-  arrange(desc(n)) %>% 
-  filter(!duplicated(type)) %>% 
-  select(!n)
-  
-# override class type match based on the canonical table
-ir_distinct_gambiae$insecticide_class <- insecticide_class_type_canon$class[match(ir_distinct_gambiae$insecticide_type,insecticide_class_type_canon$type)] 
+# Copies are removed in three stages (supplement steps 6 to 8): within one
+# version (a database's records of one paper, or of one other citation); one
+# paper in two or more databases, keeping one database's whole version; and one
+# test under two citations, record by record. So a version of a paper is chosen
+# before any of its records is matched with another citation's.
+#
+# Copies (agreeing_pairs()) are looked for within max_km of each other in
+# different databases, as the databases georeference sites differently, and
+# within max_km_within in the same database. Matching on the percentage alone
+# is less specific, so its distance is shorter.
+max_km <- c(count = 100, percent = 50, misscaled = 100)
+max_km_within <- 10
 
-# check again if every combination of type and class is unique
-(table(ir_distinct_gambiae$insecticide_type,ir_distinct_gambiae$insecticide_class) %>% 
-  as_tibble(.name_repair = "unique") %>% 
-  rename(type = ...1, class = ...2) %>% distinct(type, class) %>% nrow()) == (table(ir_distinct_gambiae$insecticide_type,ir_distinct_gambiae$insecticide_class) %>% 
-  as_tibble(.name_repair = "unique") %>% 
-  rename(type = ...1, class = ...2) %>% distinct(type, class) %>% nrow())
+# Which copy to keep (supplement step 8): one with a recorded number of
+# mosquitoes, then the first database in the order of the sources above
+bioassays <- bioassays %>%
+  arrange(!n_recorded, source_rank, record) %>%
+  mutate(preference = row_number(),
+         record_key = paste(source, record_id)) %>%
+  arrange(record)
 
-# # save the diagnostic interactive map
-# mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
+# A reviewer decides each pair of potential copies that step 8 flags, as copies
+# ("copy") or separate tests ("different"), in review/bioassay_duplicates.csv,
+# by pair_id
+decisions <- read_csv("review/bioassay_duplicates.csv",
+                      col_types = cols(.default = "c")) %>%
+  select(pair_id, decision)
+if (!all(decisions$decision %in% c("copy", "different"))) {
+  stop("decisions in review/bioassay_duplicates.csv must be copy or different")
+}
 
-# save these out as an RDS
-saveRDS(ir_distinct_gambiae,
-        file = "data/clean/all_gambiae_complex_data.RDS")
+record_info <- bioassays %>%
+  select(record, record_key, database, source, version_key, citation, site,
+         month, generation, preference)
+pairs <- agreeing_pairs(bioassays, max_km, max_km_within) %>%
+  left_join(record_info, by = c("a" = "record")) %>%
+  left_join(record_info, by = c("b" = "record"), suffix = c("_a", "_b")) %>%
+  mutate(pair_id = pair_id(record_key_a, record_key_b),
+         name_match = same_site_name(site_a, site_b),
+         same_version = version_key_a == version_key_b) %>%
+  left_join(select(decisions, pair_id, decision), by = "pair_id")
 
+# Keep the preferred record of each pair of copies
+drop_less_preferred <- function(pairs) {
+  mutate(pairs,
+         dropped = if_else(preference_a > preference_b, a, b),
+         kept = if_else(dropped == a, b, a))
+}
+
+# ---- 1. copies within a version ----
+
+# Two records of one version are one test in two downloads of the database
+# (e.g. the IR Mapper extracts' species and complex files, or the MTM's
+# discriminating-concentration and intensity downloads) if they are at the
+# same coordinates in the same month and generation, paired one-to-one; else
+# they are separate tests. Within one download, a paper's records are separate
+# tests (bar a paper repeated in a download, above): we trust the authors and
+# the databases' extractors. A version's complex-level records that sum its
+# own species-level records are copies too (aggregated_copies()).
+same_text <- function(x, y) {
+  coalesce(as.character(x), "") == coalesce(as.character(y), "")
+}
+dropped_downloads <- pairs %>%
+  filter(same_version, source_a != source_b, km < 0.01,
+         same_text(month_a, month_b), same_text(generation_a, generation_b)) %>%
+  one_to_one(between = c("source_a", "source_b")) %>%
+  drop_less_preferred()
+# A database that cites one paper in two ways has entered it twice (supplement
+# step 6): a record of one entry that matches a record of the other is a repeat
+dropped_entries <- pairs %>%
+  filter(same_version, name_key(citation_a) != name_key(citation_b),
+         !a %in% dropped_downloads$dropped, !b %in% dropped_downloads$dropped) %>%
+  mutate(entry_a = name_key(citation_a), entry_b = name_key(citation_b)) %>%
+  one_to_one(between = c("entry_a", "entry_b")) %>%
+  drop_less_preferred()
+dropped_sums <- aggregated_copies(
+  filter(bioassays, !record %in% c(dropped_downloads$dropped,
+                                    dropped_entries$dropped)))
+version_records <- filter(bioassays,
+                          !record %in% c(dropped_downloads$dropped,
+                                         dropped_entries$dropped, dropped_sums))
+
+# ---- 2. one version of each paper ----
+
+# For each paper in two or more databases, we keep one database's whole
+# version (supplement step 7): the best on its numbers tested, places and
+# years, then the one with most records the model uses
+# (subset_modelled_bioassays()), then the first in the order of databases of
+# the sources (paper_versions()).
+database_order <- unique(map_chr(sources, "database"))
+modelled <- version_records %>%
+  mutate(year = (year_start + year_end) %/% 2) %>%
+  subset_modelled_bioassays(mask) %>%
+  pull(record)
+versions <- paper_versions(version_records, modelled, database_order)
+
+# A paper is flagged for manual review (supplement step 7) where its versions
+# conflict (paper_versions()), where a dropped version has 5 or more modelled
+# records the kept version doesn't match (unmatched_in_kept()), or where the
+# version kept has records of more than 500 mosquitoes tested and another
+# version has none, or it has only one version. The reviewer records the
+# version to keep in review/bioassay_paper_decisions.csv: a database, or
+# "none" to drop the paper. The prep warns of any flagged paper without a
+# decision, and keeps the rule's version meanwhile.
+unmatched <- unmatched_in_kept(
+  filter(version_records, is_paper, record %in% modelled),
+  versions %>%
+    filter(rank == 1) %>%
+    select(paper, kept_database = database),
+  copies = filter(pairs, !within, agreement != "misscaled"))
+over_500 <- version_records %>%
+  filter(is_paper, record %in% modelled) %>%
+  group_by(paper, database) %>%
+  summarise(over_500 = sum(n_recorded & mosquito_number > 500),
+            .groups = "drop")
+paper_decisions <- read_csv("review/bioassay_paper_decisions.csv",
+                            col_types = cols(.default = "c")) %>%
+  select(paper, decision)
+versions <- versions %>%
+  left_join(count(unmatched, paper, database, name = "unmatched"),
+            by = c("paper", "database")) %>%
+  mutate(unmatched = if_else(rank == 1, NA, coalesce(unmatched, 0L))) %>%
+  left_join(over_500, by = c("paper", "database")) %>%
+  left_join(paper_decisions, by = "paper") %>%
+  group_by(paper) %>%
+  mutate(flagged = conflict | any(unmatched >= 5, na.rm = TRUE) |
+           (any(rank == 1 & over_500 > 0, na.rm = TRUE) &
+              (n() == 1 | any(over_500 == 0, na.rm = TRUE))),
+         kept = case_when(decision == "none" ~ FALSE,
+                          decision %in% database ~ database == decision,
+                          .default = rank == 1)) %>%
+  ungroup()
+# a decision must be for a flagged paper, and name one of its versions or none
+bad_decisions <- paper_decisions %>%
+  left_join(distinct(versions, paper, database, flagged), by = "paper") %>%
+  group_by(paper, decision) %>%
+  summarise(ok = !anyNA(database) & all(flagged) &
+              (first(decision) == "none" | first(decision) %in% database),
+            .groups = "drop") %>%
+  filter(!ok)
+if (nrow(bad_decisions) > 0) {
+  stop("paper decisions for papers not flagged, or naming no version: ",
+       paste(bad_decisions$paper, bad_decisions$decision, sep = ", ",
+             collapse = "; "))
+}
+undecided <- n_distinct(filter(versions, flagged, is.na(decision))$paper)
+if (undecided > 0) {
+  warning(undecided, " papers flagged for review have no decision; see ",
+          "outputs/review/bioassay_paper_versions.csv")
+}
+dropped_versions <- version_records %>%
+  filter(is_paper) %>%
+  semi_join(filter(versions, !kept), by = c("paper", "database")) %>%
+  pull(record)
+dropped_papers <- version_records %>%
+  filter(is_paper) %>%
+  semi_join(filter(versions, decision == "none"), by = "paper") %>%
+  pull(record)
+dropped_versions <- setdiff(dropped_versions, dropped_papers)
+
+# ---- 3. copies under different citations ----
+
+# Among the records left (the kept version of each paper, and the records
+# whose citation isn't a paper), copies under different citations, in one
+# database or two, are paired one-to-one (one_to_one()). Two citations whose
+# copies include at least two results between 0% and 100% share one dataset,
+# and all their copies are copies. Otherwise, where two citations have 5 or
+# more copies, each is decided by manual review, and fewer are taken as copies
+# (supplement step 8).
+left <- setdiff(version_records$record, c(dropped_versions, dropped_papers))
+copies <- pairs %>%
+  filter(!same_version, agreement != "misscaled", a %in% left,
+         b %in% left) %>%
+  one_to_one(between = c("version_key_a", "version_key_b")) %>%
+  mutate(citation_1 = pmin(version_key_a, version_key_b),
+         citation_2 = pmax(version_key_a, version_key_b)) %>%
+  group_by(citation_1, citation_2) %>%
+  mutate(shared = sum(!extreme), copies = n()) %>%
+  ungroup() %>%
+  mutate(rule = case_when(shared >= 2 ~ "shared results",
+                          copies >= 5 ~ "review",
+                          .default = "few copies"),
+         decision = if_else(rule == "review", decision, NA),
+         copy = coalesce(decision == "copy", TRUE)) %>%
+  drop_less_preferred()
+undecided <- sum(copies$rule == "review" & is.na(copies$decision))
+if (undecided > 0) {
+  warning(undecided, " pairs flagged for review have no decision; see ",
+          "outputs/review/bioassay_review_pairs.csv")
+}
+unused <- setdiff(decisions$pair_id,
+                  filter(copies, rule == "review")$pair_id)
+if (length(unused) > 0) {
+  stop(length(unused), " decisions in review/bioassay_duplicates.csv are for ",
+       "pairs step 8 doesn't flag: ", paste(head(unused), collapse = ", "))
+}
+dropped_cross <- filter(copies, copy)$dropped
+
+# A record on the wrong scale (its mortality, read as a number dead or a
+# proportion, gives another database's number dead) is dropped, unless it
+# also has a copy on its own scale in another database (then the match was a
+# coincidence).
+has_copy <- pairs %>%
+  filter(!within, agreement != "misscaled") %>%
+  select(a, b) %>%
+  unlist() %>%
+  unique()
+misscaled <- pairs %>%
+  filter(agreement == "misscaled", !a %in% has_copy, a %in% left,
+         b %in% left) %>%
+  one_to_one() %>%
+  mutate(dropped = a, kept = b)
+
+dropped_pooled <- pooled_copies(filter(bioassays, record %in% left))
+
+# every copy dropped, with the record kept in its place; the versions dropped
+# are listed in outputs/review/bioassay_paper_versions.csv
+links <- bind_rows(
+  mutate(dropped_downloads, rule = "one version: one test in two downloads"),
+  mutate(dropped_entries, rule = "one version: a paper cited twice in a database"),
+  tibble(dropped = dropped_sums,
+         rule = "one version: sum of its species-level records"),
+  copies %>%
+    filter(copy) %>%
+    mutate(rule = paste("different citations:", coalesce(decision, rule))),
+  mutate(misscaled, rule = "different citations: wrong scale"),
+  tibble(dropped = dropped_pooled,
+         rule = "different citations: separate tests pooled into one record")
+) %>%
+  select(rule, km, dropped, kept)
+
+before_copies <- bioassays
+bioassays <- bioassays %>%
+  keep_records(!record %in% dropped_downloads$dropped,
+               "one test in two downloads") %>%
+  keep_records(!record %in% dropped_entries$dropped,
+               "a paper cited twice in a database") %>%
+  keep_records(!record %in% dropped_sums, "sum of species records") %>%
+  keep_records(!record %in% dropped_versions,
+               "another database's version of the paper") %>%
+  keep_records(!record %in% dropped_papers,
+               "paper unusable in every version") %>%
+  keep_records(!record %in% dropped_cross, "copy under another citation") %>%
+  keep_records(!record %in% misscaled$dropped,
+               "number dead given as mortality") %>%
+  keep_records(!record %in% dropped_pooled, "pooled separate tests")
+
+# the models use one year for each test: the middle of its years, rounded
+# down, so a test over two years takes the first
+bioassays <- mutate(bioassays, year = (year_start + year_end) %/% 2)
+
+# ---- study labels ----
+
+# A label for each study, to model noise shared by the bioassays of a study
+# (the survey is the study and year; supplement step 9): a paper's first
+# author and year (as its citations most often give them), with a letter where
+# two papers in a country share them, or another citation's first author and
+# year, or the citation itself where none parses (e.g. "Ministry of Health").
+# Labels are split by country, which stops institutional labels and personal
+# communications of multi-country datasets pooling surveys across countries
+# (#53).
+study_labels <- bioassays %>%
+  count(paper, is_paper, label) %>%
+  group_by(paper, is_paper) %>%
+  slice_max(n, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(paper, is_paper, study_label = label) %>%
+  right_join(distinct(bioassays, paper, is_paper, country_name),
+             by = c("paper", "is_paper")) %>%
+  group_by(study_label, country_name, is_paper) %>%
+  mutate(study_label = if (first(is_paper) && n() > 1) {
+    paste0(study_label, letters[rank(paper)])
+  } else {
+    study_label
+  }) %>%
+  ungroup() %>%
+  transmute(paper, country_name, study = paste(study_label, country_name, sep = ", "))
+bioassays <- bioassays %>%
+  left_join(study_labels, by = c("paper", "country_name")) %>%
+  mutate(species_complex = "gambiae complex",
+         n_imputed = !n_recorded,
+         link = paper_link(link, citation))
+
+# ---- records for review, and reports ----
+
+# The pairs flagged for review, with what the reviewer needs: each record's
+# citation, a link to the paper (its DOI, the database's URL, or a Google
+# Scholar search), the fields that might distinguish two tests, and any
+# decision already recorded. A reviewer copies a pair's row into
+# review/bioassay_duplicates.csv and fills in `decision` ("copy" or
+# "different") and `notes`. Undecided pairs are taken as copies.
+review_fields <- c("source", "record_id", "citation", "link", "year_start",
+                   "year_end", "site", "latitude", "longitude", "month",
+                   "generation", "species", "mosquito_number", "n_recorded",
+                   "died", "mortality_adjusted")
+record_fields <- before_copies %>%
+  mutate(link = paper_link(link, citation)) %>%
+  select(record, insecticide_type, concentration,
+         all_of(review_fields))
+side_by_side <- function(pairs) {
+  a <- record_fields %>%
+    rename_with(~ paste0(.x, "_a"), all_of(review_fields))
+  b <- record_fields %>%
+    select(record, all_of(review_fields)) %>%
+    rename_with(~ paste0(.x, "_b"), all_of(review_fields))
+  pairs %>%
+    select(any_of(c("pair_id", "reason", "database_a", "database_b", "km",
+                    "shared", "a", "b"))) %>%
+    left_join(a, by = c("a" = "record")) %>%
+    left_join(b, by = c("b" = "record")) %>%
+    select(any_of(c("pair_id", "reason", "database_a", "database_b", "km",
+                    "shared", "insecticide_type",
+                    "concentration")),
+           all_of(as.vector(rbind(paste0(review_fields, "_a"),
+                                  paste0(review_fields, "_b")))))
+}
+filter(copies, rule == "review") %>%
+  mutate(reason = rule, km = round(km, 2)) %>%
+  side_by_side() %>%
+  left_join(decisions, by = "pair_id") %>%
+  relocate(pair_id, decision) %>%
+  arrange(!is.na(decision), reason, citation_a) %>%
+  write_excel_csv("outputs/review/bioassay_review_pairs.csv", na = "")
+
+# Each paper's versions, the one kept and why: the rule's rank and reason, the
+# records of each dropped version the kept version doesn't match, whether the
+# paper is flagged for review, and any decision. A reviewer adds a flagged
+# paper's decision to review/bioassay_paper_decisions.csv.
+versions %>%
+  group_by(paper) %>%
+  filter(n() > 1 | flagged) %>%
+  ungroup() %>%
+  left_join(bioassays %>% count(paper, label) %>% group_by(paper) %>%
+              slice_max(n, n = 1, with_ties = FALSE) %>% select(paper, label),
+            by = "paper") %>%
+  arrange(desc(flagged), label, rank) %>%
+  select(flagged, decision, label, paper, database, kept, rank, reason,
+         conflict, numbers_vary, places, years, records, modelled_records,
+         unmatched, over_500) %>%
+  write_excel_csv("outputs/review/bioassay_paper_versions.csv", na = "")
+
+links %>%
+  rename(a = dropped, b = kept) %>%
+  mutate(reason = rule, km = round(km, 2)) %>%
+  side_by_side() %>%
+  rename_with(~ sub("_a$", "_dropped", sub("_b$", "_kept", .x))) %>%
+  write_excel_csv("outputs/review/bioassay_links.csv", na = "")
+
+attrition <- attrition %>%
+  left_join(count(bioassays, source, name = "kept"), by = "source") %>%
+  arrange(match(source, map_chr(sources, "source")))
+write.csv(attrition, "outputs/review/bioassay_attrition.csv", row.names = FALSE)
+print(as.data.frame(attrition))
+
+bioassays %>%
+  select(mortality_adjusted, mosquito_number, died, n_imputed, year,
+         year_start, year_end, month, latitude, longitude, site, species,
+         species_complex, insecticide_type, insecticide_class, concentration,
+         test_type, country_name, region, citation, link, study, source,
+         database, record_id) %>%
+  saveRDS("data/clean/all_gambiae_complex_data.RDS")
