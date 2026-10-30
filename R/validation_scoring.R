@@ -76,8 +76,7 @@ read_assay_draws <- function(fold_file) {
 # stream of its own per fold and per use, seeded from the fold's file name and
 # the use, and leaves the main stream where it was: adding a model then changes
 # no number for the others, and its folds do not share uniforms.
-main_stream_models <- c("dynamical", "intercept", "nearest_neighbour",
-                        "nearest_neighbour_oracle")
+main_stream_models <- c("dynamical", "intercept", "nearest_neighbour")
 
 with_fold_stream <- function(file, use, expr) {
   if (sub("__.*$", "", basename(file)) %in% main_stream_models) return(expr)
@@ -86,11 +85,6 @@ with_fold_stream <- function(file, use, expr) {
   on.exit(assign(".Random.seed", saved, envir = globalenv()))
   set.seed(string_seed(key))
   expr
-}
-
-# a seed from a string: a polynomial string hash, exact in double precision
-string_seed <- function(key) {
-  Reduce(function(h, x) (h * 31 + x) %% 2147483647, utf8ToInt(key), 0)
 }
 
 
@@ -122,6 +116,9 @@ string_seed <- function(key) {
 #   cdf_below_map, pmf_at_map
 #              the two-stage model's predictive distribution without u, p and
 #              sy, for its coverage without them; NA for every other model
+#   nearest_km, nearest_year
+#              the nearest neighbour null's chosen bioassay (nn_null_draws()):
+#              its distance and year; NA for every other model
 score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
 
   fold <- readRDS(file)
@@ -206,6 +203,9 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       pmf_at_map = without_noise$pmf_at,
       .after = predicted
     )
+  # the nearest neighbour null's chosen bioassay: distance (km) and year
+  scores$nearest_km <- fold$nearest_km %||% NA_real_
+  scores$nearest_year <- fold$nearest_year %||% NA_real_
 
   list(scores = scores,
        pit = pit,

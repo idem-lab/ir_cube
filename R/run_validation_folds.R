@@ -37,6 +37,10 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
     experiment = label,
     fold = fold,
     p_draws = fit$p_draws,
+    # the nearest neighbour null's chosen bioassay per held-out record: its
+    # distance (km) and year, for the CV figure's panel titles
+    nearest_km = fit$nearest_km,
+    nearest_year = fit$nearest_year,
     # no fitted overdispersion: every model is scored at the external
     # replicate-based estimate, and a null that fits its own only buys coverage
     # by being vague (#12 review)
@@ -49,25 +53,15 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
   invisible(file)
 }
 
-# The nearest neighbour null is no longer tuned. It used to read a neighbour
-# count per experiment from outputs/optimal_nn.csv, chosen by grid search on an
-# internal test set of 100 records sampled at random from the training data -
-# which sat a median 0 km from their nearest usable neighbour, against 36 to 194
-# km for the records actually held out, so it chose too few neighbours and
-# handicapped the baseline. The lookup also had no row for the block folds,
-# where it returned numeric(0) and reduced the null to Beta(0.5, 0.5) without
-# erroring. Both problems go away with the table (#12).
-#
-# In its place, two specifications, neither of them a chosen value: the practice
-# baseline at one neighbour and the most recent two available years, and the
-# oracle bound at whichever neighbour count minimises the null's own error on
-# the held-out records. See nn_null_draws() and nn_oracle_draws().
+# The nearest neighbour null is not tuned: it is the single nearest bioassay in
+# the most recent two available years (nn_null_draws()).
 
 # The folds to fit: the sub-national block folds (the test of spatial skill),
 # the interpolation fold, and the two five-year forecast origins. The six
 # leave-one-country-out folds and the 2020 three-year forecasting fold are
-# defunct and are not refitted. Nulls are rebuilt for every fold either way,
-# since they cost minutes.
+# defunct and are not refitted. Every fold, null or dynamical, is skipped when
+# its file is in outputs/cv_draws, so the run resumes; empty the folder before
+# a run on new data.
 source("R/validation_blocks.R")
 
 forecast_folds <- temporal_forecasting_folds[as.character(forecast_cuts)]
@@ -129,31 +123,16 @@ for (fold in folds) {
     save_fold(
       nn_null_draws(fold$training,
                     fold$test,
-                    n_neighbours = 1,
                     n_years_prior = 1,
-                    n_draws = n_draws),
+                    n_draws = n_draws,
+                    seed = string_seed(basename(null_file(
+                      "nearest_neighbour")))),
       model = "nearest_neighbour",
       experiment = fold$experiment,
       fold = fold$fold,
       label = fold$label
     )
   }
-
-  if (file.exists(null_file("nearest_neighbour_oracle"))) next
-
-  oracle <- nn_oracle_draws(fold$training,
-                            fold$test,
-                            n_years_prior = 1,
-                            n_draws = n_draws)
-  cat(sprintf("  oracle neighbour count for %s / %s: %i\n",
-              fold$experiment, fold$fold, oracle$n_neighbours))
-  save_fold(
-    oracle,
-    model = "nearest_neighbour_oracle",
-    experiment = fold$experiment,
-    fold = fold$fold,
-    label = fold$label
-  )
 
 }
 

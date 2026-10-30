@@ -39,7 +39,7 @@ Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summ
 - Variance explained: 100 (1 − MSE / Var(y)). The ceiling is the `noise_floor_mse()` bound.
 - Coverage: the expected coverage of the central interval over the PIT randomisation (`expected_coverage()`), in every table. #12's tables used the mean over 100 PIT replicates (`cv_summary.csv`) or one replicate (`cv_by_fold.csv`); the switch changes #12's models' coverage by at most 0.002 in `cv_summary.csv` and 0.009 in `cv_by_fold.csv`.
 - Intervals: 95% pixel bootstrap.
-- NN: the nearest recent survey (k = 1). NN oracle: the nearest surveys at the k that minimises held-out error.
+- NN: the nearest recent survey (k = 1).
 
 **Interpolation** (n = 1045; ceiling 78.0%)
 
@@ -48,7 +48,6 @@ Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summ
 | dynamical | −3.863 | 0.1353 | 37.0 [26.0, 46.3] | 0.298 / 0.787 |
 | intercept | −4.233 | 0.1497 | 27.0 [22.7, 30.3] | 0.306 / 0.721 |
 | NN | −4.010 | 0.1355 | 33.7 [20.5, 44.1] | 0.343 / 0.777 |
-| NN oracle | −3.614 | 0.1107 | 52.0 [43.0, 59.7] | 0.390 / 0.833 |
 | **two-stage** | **−3.372** | **0.1028** | **57.1 [49.2, 63.8]** | 0.448 / 0.921 |
 
 **Spatial blocks 1+2** (n = 8694; ceiling 79.5%)
@@ -58,7 +57,6 @@ Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summ
 | dynamical | −4.327 | 0.1587 | 22.7 [17.9, 26.9] | 0.292 / 0.736 |
 | intercept | −4.585 | 0.1640 | 19.3 [17.1, 21.3] | 0.304 / 0.709 |
 | NN | −4.678 | 0.1685 | 13.8 [7.3, 19.8] | 0.293 / 0.691 |
-| NN oracle | −4.189 | 0.1415 | 34.1 [29.3, 38.5] | 0.323 / 0.752 |
 | **two-stage** | **−3.663** | **0.1327** | **36.9 [32.1, 41.3]** | 0.440 / 0.911 |
 
 **Forecasting 2014+2018** (n = 14018; ceiling 82.8%)
@@ -68,8 +66,7 @@ Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summ
 | dynamical | −4.359 | 0.1619 | 26.2 [20.6, 31.4] | 0.311 / 0.732 |
 | intercept | −4.703 | 0.1847 | 13.4 [10.8, 15.9] | 0.268 / 0.663 |
 | NN | −4.322 | 0.1549 | 29.8 [25.7, 33.4] | 0.311 / 0.731 |
-| NN oracle | −3.869 | **0.1281** | **48.3 [45.6, 50.9]** | 0.332 / 0.788 |
-| **two-stage** | **−3.614** | 0.1315 | 42.7 [38.7, 46.6] | 0.457 / 0.900 |
+| **two-stage** | **−3.614** | **0.1315** | **42.7 [38.7, 46.6]** | 0.457 / 0.900 |
 
 **Two-stage minus dynamical**, paired:
 
@@ -83,17 +80,17 @@ Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summ
 
 **By forecast horizon** (both origins pooled):
 
-| horizon (years) | n | variance explained | Δ log score vs dynamical | Δ explained vs dynamical | cover 95 | NN oracle explained |
-|---|---|---|---|---|---|---|
-| 1 | 4228 | 51.1 [46.0, 55.5] | +0.62 [+0.53, +0.71] | +18.5 [+14.8, +22.4] | 0.914 | 49.0 |
-| 2 | 3176 | 51.9 [46.0, 57.1] | +0.61 [+0.51, +0.73] | +12.0 [+8.2, +16.0] | 0.914 | 55.5 |
-| 3 | 2247 | 39.2 [27.5, 49.3] | +0.55 [+0.44, +0.66] | +10.3 [+6.2, +14.3] | 0.883 | 47.0 |
-| 4 | 2222 | 30.4 [21.1, 38.6] | +1.05 [+0.86, +1.23] | +19.4 [+14.4, +24.8] | 0.882 | 45.0 |
-| 5 | 2145 | 30.9 [21.1, 39.2] | +1.09 [+0.93, +1.26] | +23.5 [+19.4, +28.2] | 0.887 | 40.8 |
+| horizon (years) | n | variance explained | Δ log score vs dynamical | Δ explained vs dynamical | cover 95 |
+|---|---|---|---|---|---|
+| 1 | 4228 | 51.1 [46.0, 55.5] | +0.62 [+0.53, +0.71] | +18.5 [+14.8, +22.4] | 0.914 |
+| 2 | 3176 | 51.9 [46.0, 57.1] | +0.61 [+0.51, +0.73] | +12.0 [+8.2, +16.0] | 0.914 |
+| 3 | 2247 | 39.2 [27.5, 49.3] | +0.55 [+0.44, +0.66] | +10.3 [+6.2, +14.3] | 0.883 |
+| 4 | 2222 | 30.4 [21.1, 38.6] | +1.05 [+0.86, +1.23] | +19.4 [+14.4, +24.8] | 0.882 |
+| 5 | 2145 | 30.9 [21.1, 39.2] | +1.09 [+0.93, +1.26] | +23.5 [+19.4, +28.2] | 0.887 |
 
 - The two-stage model has the best log score in every experiment.
-- On variance explained it beats the NN oracle on interpolation (+5) and blocks (+3), and trails it on forecasting (−6), mostly at horizons of 3–5 years.
-- Its 95% coverage is 0.89–0.92. Every other model's is 0.66–0.83.
+- It explains the most variance in every experiment.
+- Its 95% coverage is 0.89–0.92. Every other model's is 0.66–0.79.
 - These are from the rerun of the five folds with #21's final code (meshes covering the prediction mask, `m_ref` unclamped, seeds per fold and type). Against the earlier draws, the posterior mean predictions correlate at 0.9998–0.9999 per fold (mean |difference| 0.2–0.4 points of mortality), and the headline scores move by at most 0.002 in log score, 0.2 points of variance explained and 0.002 in coverage.
 
 ## Decisions

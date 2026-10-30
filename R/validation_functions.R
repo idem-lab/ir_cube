@@ -447,3 +447,8 @@ rho_for_record <- function(data, lookup) {
   stopifnot(!any(is.na(out)))
   out
 }
+
+# a seed from a string: a polynomial string hash, exact in double precision
+string_seed <- function(key) {
+  Reduce(function(h, x) (h * 31 + x) %% 2147483647, utf8ToInt(key), 0)
+}
