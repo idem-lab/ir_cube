@@ -20,7 +20,10 @@
 #            pair's two floors over its gap squared. The dotted line
 #   local    the expected score of an independent second bioassay at the same
 #            pixel-year (level: 100 (1 - 2 F / Var(y)), the target's noise and
-#            its own), or an independent second pair at the same pixel (change)
+#            its own), or an independent second pair at the same pixel (change).
+#            With `pools`, also local_<n>: the mean of n such bioassays or
+#            pairs, whose noise is 1/n of one's (level: 100 (1 - (1 + 1/n) F /
+#            Var(y)), the ceiling less (100 - ceiling) / n)
 #   n*_CV    for level, the number of bioassays the bar is worth (n_star_cv())
 #
 # Intervals resample pixels (cluster_bootstrap(), in R/validation_scoring.R).
@@ -82,10 +85,17 @@ record_floor <- function(data, rho = NULL) {
 
 # level ----------------------------------------------------------------------------
 
+# the local bars' names: local for one bioassay or pair, local_<n> for the
+# mean of n
+local_names <- function(pools) {
+  ifelse(pools == 1, "local", paste0("local_", pools))
+}
+
 # Scores of every column of `data` named in `predictions` (bar label =
-# column), plus the ceiling and the local bar. The floor's mean is over the
-# assays that carry one (noise_floor_mse())
-level_statistic <- function(predictions) {
+# column), plus the ceiling and the local bars for each number of bioassays in
+# `pools`. The floor's mean is over the assays that carry one
+# (noise_floor_mse())
+level_statistic <- function(predictions, pools = 1) {
   function(data, rho) {
     variance <- mean((data$observed - mean(data$observed)) ^ 2)
     floor <- mean(record_floor(data, rho), na.rm = TRUE)
@@ -93,7 +103,8 @@ level_statistic <- function(predictions) {
       100 * (1 - mean((data$observed - data[[column]]) ^ 2) / variance)
     }, numeric(1))
     c(ceiling = 100 * (1 - floor / variance),
-      local = 100 * (1 - 2 * floor / variance),
+      setNames(100 * (1 - (1 + 1 / pools) * floor / variance),
+               local_names(pools)),
       scores)
   }
 }
@@ -136,22 +147,22 @@ pair_floor <- function(pairs, rho = NULL) {
   (floor_b + floor_a) / pairs$gap ^ 2
 }
 
-# The expected squared error of an independent second pair at the same pixel,
-# as a prediction of the target pair: the second pair's noise, taken to be
-# the target's two assays' noise over a gap drawn from the targets' gaps (the
-# mean of 1 / gap^2 under weights w), plus the target's own noise. Rewriting
-# the target's floor F_pair = (F_b + F_a) / g^2 that way gives
-# F_pair (1 + g^2 E[1 / gap^2])
-local_pair_error <- function(pairs, floor, w) {
+# The expected squared error of the mean of n independent pairs at the same
+# pixel, as a prediction of the target pair: their noise, each pair's taken to
+# be the target's two assays' noise over a gap drawn from the targets' gaps
+# (the mean of 1 / gap^2 under weights w), over n, plus the target's own
+# noise. Rewriting the target's floor F_pair = (F_b + F_a) / g^2 that way
+# gives F_pair (1 + g^2 E[1 / gap^2] / n)
+local_pair_error <- function(pairs, floor, w, n = 1) {
   inverse_square_gap <- sum(w / pairs$gap ^ 2) / sum(w)
-  floor * (1 + pairs$gap ^ 2 * inverse_square_gap)
+  floor * (1 + pairs$gap ^ 2 * inverse_square_gap / n)
 }
 
 # Scores of every rate column of `pairs` named in `predictions` (a predicted
-# change over the pair's gap, per year), plus the ceiling and the local pair,
-# each pair weighted by its column `weight` (giving each pixel-insecticide
-# equal weight)
-change_statistic <- function(predictions, weight = "w") {
+# change over the pair's gap, per year), plus the ceiling and the local pairs
+# for each number of pairs in `pools`, each pair weighted by its column
+# `weight` (giving each pixel-insecticide equal weight)
+change_statistic <- function(predictions, weight = "w", pools = 1) {
   function(pairs, rho) {
     w <- pairs[[weight]]
     floor <- pair_floor(pairs, rho)
@@ -159,8 +170,11 @@ change_statistic <- function(predictions, weight = "w") {
     scores <- vapply(predictions, function(column) {
       100 * (1 - sum(w * (pairs[[column]] - pairs$rate) ^ 2) / total)
     }, numeric(1))
+    local <- vapply(pools, function(n) {
+      100 * (1 - sum(w * local_pair_error(pairs, floor, w, n)) / total)
+    }, numeric(1))
     c(ceiling = 100 * (1 - sum(w * floor) / total),
-      local = 100 * (1 - sum(w * local_pair_error(pairs, floor, w)) / total),
+      setNames(local, local_names(pools)),
       scores)
   }
 }

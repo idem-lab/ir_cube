@@ -17,26 +17,24 @@
 # error bar keeps the quantities on one additive scale, so the grey is always
 # the shortfall.
 #
-# Sourcing this file defines the colours, skill_bar_layers(), skill_key() and
-# base_theme; it draws nothing on its own.
+# Sourcing this file defines the colours, skill_bar_layers(), region_key(),
+# skill_key() and base_theme; it draws nothing on its own.
 suppressMessages({
   library(dplyr)
   library(ggplot2)
 })
 
-# The bioassay-based bars take one green hue (OKLCH h = 150) at three
-# saturations, lightest for the most local. The models keep the colours of the
+# The bioassay-based bars take one green hue (OKLCH h = 150) at two
+# saturations, lighter for the nearest bioassay, further away. The models keep the colours of the
 # earlier figures: blue for the dynamical model, magenta for the two-stage
 # model.
 bar_colours <- c(
-  local = "#B6DDBD",
-  best_k = "#6FB07D",
-  nearest = "#137738",
+  local = "#137738",
+  nearest = "#B6DDBD",
   dynamical = "#2166AC",
   two_stage = "#C51B7D")
-bar_labels <- c(local = "local", best_k = "best K", nearest = "nearest",
-                dynamical = "dynamical", two_stage = "two-stage")
-bioassay_bars <- c("local", "best_k", "nearest")
+bar_labels <- c(local = "Local\nbioassay", nearest = "Nearest\nbioassay",
+                dynamical = "Mechanistic\nonly", two_stage = "Full\nmodel")
 
 noise_fill <- "#F7F7F7"
 remainder_fill <- "#DEDEDE"
@@ -44,10 +42,11 @@ outline_colour <- grey(0.7)
 ceiling_colour <- grey(0.25)
 interval_alpha <- 0.45
 
-# The rule at the estimate: white on every bar but the lightest, where it
-# would vanish
+# The rule at the estimate: white on every bar but the lightest
+# (light_bars), where it would vanish
+light_bars <- "nearest"
 rule_colour <- function(bar) {
-  ifelse(bar == "local", bar_colours[["nearest"]], "white")
+  ifelse(bar %in% light_bars, bar_colours[["local"]], "white")
 }
 
 # One bar per row of `data`: position, bar (a name of bar_colours), estimate,
@@ -97,8 +96,38 @@ skill_bar_layers <- function(data, width = 0.8) {
   )
 }
 
-# The one key: the bar parts only, as a ggplot of its own to set beside or
-# below the panels. `swatch_bar` gives the colour of the score's swatch
+# The three parts of a bar labelled directly, as in the figure of f5dc188: a
+# vertical line beside each part of a reference bar (one row of the bars'
+# data, with its facet column), offset `x` to its right, with its label beside
+# the line. The rest of the encoding (the interval, the ceiling's dotted line)
+# is left to the caption. Draw with clipping off, as the labels run past the
+# panel
+region_key <- function(reference, x, label_gap = 0.12, label_size = 3.9,
+                       gap = 1.6) {
+  regions <- tibble(
+    from = c(0, reference$estimate + gap, reference$ceiling + gap),
+    to = c(reference$estimate - gap, reference$ceiling - gap, 100),
+    label = c("explained variance", "unexplained variance", "bioassay noise"),
+    colour = c(bar_colours[[reference$bar]], grey(0.45), grey(0.62))) %>%
+    bind_cols(select(reference, -any_of(c("from", "to", "label",
+                                          "colour"))) %>%
+                select(where(is.factor)) %>%
+                slice(rep(1, 3)))
+  list(
+    geom_segment(data = regions,
+                 aes(x = x, xend = x, y = from, yend = to,
+                     colour = colour),
+                 linewidth = 0.9, inherit.aes = FALSE),
+    # the labels in one dark grey, the lines carrying the parts' colours
+    geom_text(data = regions,
+              aes(x = x + label_gap, y = (from + to) / 2, label = label),
+              colour = grey(0.2), hjust = 0, size = label_size,
+              inherit.aes = FALSE)
+  )
+}
+
+# The floating key: the bar parts only, as a ggplot of its own to set beside
+# or below the panels. `swatch_bar` gives the colour of the score's swatch
 skill_key <- function(swatch_bar = "two_stage", text_size = 3.1) {
   swatch <- function(y, ...) {
     annotate("rect", xmin = 0, xmax = 0.45, ymin = y - 0.3, ymax = y + 0.3,
