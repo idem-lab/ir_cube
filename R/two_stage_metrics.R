@@ -50,8 +50,7 @@ output_dir <- "outputs/two_stage"
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 scores <- read.csv("outputs/cv_scores.csv", colClasses = c(fold = "character"))
-models <- c("dynamical", "two_stage", "nearest_neighbour",
-            "nearest_neighbour_oracle", "intercept")
+models <- c("dynamical", "two_stage", "nearest_neighbour", "intercept")
 stopifnot(all(models %in% scores$model))
 
 # years ahead of the last training year, for the forecasting folds: the

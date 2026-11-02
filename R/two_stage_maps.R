@@ -53,9 +53,9 @@
 #            temporary/ingredient_weights.RDS. Summing the SDs takes the
 #            pyrethroids' errors as perfectly correlated, the largest SD
 #            their marginal SDs allow (n_star(), #40);
-#   figures  the two-stage-specific maps in figures/two_stage/ (n*_pop and
-#            n*_local (#40), correction, difference from the dynamical
-#            model), in the layout of R/fig_ir_maps.R, which maps the
+#   figures  the two-stage-specific maps in figures/two_stage/ (posterior SD,
+#            n*_pop and n*_local (#40), correction, difference from the
+#            dynamical model), in the layout of R/fig_ir_maps.R, which maps the
 #            two-stage model's mortality.
 
 arguments <- commandArgs(trailingOnly = TRUE)
@@ -472,9 +472,10 @@ insecticides_plot <- c("Alpha-cypermethrin", "Deltamethrin",
 insecticides_col <- setNames(rev(scales::hue_pal()(length(insecticides_plot))),
                              insecticides_plot)
 
-# a quantity at the panel years, masked: n*_pop and n*_local (n_star(), from
-# the posterior means and SDs of the type, or of the types llin_effective
-# weights, without and with u and p) and the difference from the dynamical
+# a quantity at the panel years, masked: the two-stage posterior SD
+# (percentage points), n*_pop and n*_local (n_star(), from the posterior means
+# and SDs of the type, or of the types llin_effective weights, without and
+# with u and p) and the difference from the dynamical
 # model (two-stage minus dynamical posterior mean, percentage points, from the
 # same draws) from the yearly rasters, the others from the panel-year rasters
 read_map <- function(type, quantity) {
@@ -489,6 +490,7 @@ read_map <- function(type, quantity) {
            weights = weights)
   }
   r <- switch(quantity,
+              two_stage_sd_pp = 100 * yearly("susceptibility_sd"),
               n_star_pop = n_star_map(
                 function(t) yearly("susceptibility", t),
                 function(t) yearly("susceptibility_sd", t)),
@@ -550,6 +552,7 @@ pooled_quantile <- function(quantity, prob = 0.995) {
 }
 correction_limit <- ceiling(pooled_quantile("correction_mean") * 4) / 4
 difference_limit <- ceiling(pooled_quantile("difference_pp") / 5) * 5
+sd_limit <- ceiling(pooled_quantile("two_stage_sd_pp") / 5) * 5
 
 model_note <- function(type) {
   T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
@@ -557,8 +560,8 @@ model_note <- function(type) {
                 "later years are the AR(1) forecast of xi"), T_k)
 }
 
-# the posterior uncertainty as n*, under both readings of u and p
-# (local_terms). The posterior mean is mapped by R/fig_ir_maps.R
+# the posterior uncertainty as an SD and as n*, under both readings of u and
+# p (local_terms). The posterior mean is mapped by R/fig_ir_maps.R
 n_star_target <- c(
   pop = paste("ilogit(m + omega + xi), u and p taken as data error: the upper",
               "bound on the map's worth"),
@@ -608,6 +611,20 @@ for (type in c(insecticides_plot, "llin_effective")) {
 }
 
 for (type in insecticides_plot) {
+  year_panels(
+    read_map(type, "two_stage_sd_pp"),
+    # a coloured sequential palette, so that no SD reads as the grey of the
+    # masked land behind it
+    scale_fill_viridis_c(name = "SD<br>(% points)", limits = c(0, sd_limit),
+                         option = "magma", direction = -1,
+                         oob = scales::squish, na.value = "transparent",
+                         guide = colourbar),
+    title = sprintf("%s: two-stage model, posterior SD", type),
+    subtitle = paste("Posterior SD of susceptibility, ilogit(m + omega + xi),",
+                     "in percentage points, including the dynamical model's",
+                     "uncertainty;", model_note(type)),
+    file = file.path(figure_dir, sprintf("%s_two_stage_sd_map.png", type)))
+
   year_panels(
     read_map(type, "correction_mean"),
     diverging_scale("Correction<br>(logit)", correction_limit),

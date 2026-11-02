@@ -7,8 +7,16 @@ start_greta()
 source("R/packages.R")
 source("R/functions.R")
 
-# load the fitted model objects here, to set up predictions
-load(file = "temporary/fitted_model.RData")
+source("R/bioassay_subset.R")
+
+# the modelled insecticide types and their classes, as R/fit_model.R builds
+# them; the overdispersion fit needs no fitted dynamical model
+baseline_year <- 1995
+modelled <- modelled_bioassays(baseline_year)
+types <- modelled$types
+classes <- modelled$classes
+classes_index <- modelled$classes_index
+rm(modelled)
 
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")

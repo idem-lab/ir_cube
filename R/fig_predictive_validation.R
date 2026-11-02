@@ -27,19 +27,15 @@ aggregated <- read.csv("outputs/cv_aggregate_summary.csv")
 rho_comparison <- read.csv("outputs/cv_rho_comparison.csv")
 by_fold <- read.csv("outputs/cv_by_fold.csv", encoding = "UTF-8")
 
-# The nearest neighbour null is reported twice: as the practice baseline a
-# person would actually apply (one neighbour, the most recent two available
-# years), and as an oracle bound at whichever neighbour count minimises its own
-# error on the held-out records - hindsight the dynamical model is not given.
+# The nearest neighbour null is the practice baseline a person would actually
+# apply: one neighbour, the most recent two available years.
 model_labels <- c(dynamical = "dynamical model",
                   two_stage = "two-stage model",
                   nearest_neighbour = "nearest neighbour",
-                  nearest_neighbour_oracle = "nearest neighbour (best k)",
                   intercept = "insecticide mean")
 model_colours <- c("dynamical model" = "#2166AC",
                    "two-stage model" = "#C51B7D",
                    "nearest neighbour" = "#B2182B",
-                   "nearest neighbour (best k)" = "#E08214",
                    "insecticide mean" = grey(0.55))
 
 # The forecasting experiment is one per origin, since pooling a 2014 forecast

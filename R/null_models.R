@@ -16,166 +16,79 @@
 # nominal coverage by inflating its rho to 0.45 against an external estimate of
 # 0.12-0.22 (#12 review).
 
-# approximate non-zero and non-one proportions by applying the empirical logit
-# transform to the data and then the inverse logit to provide a proportion
-emplog_prop <- function(died, mosquito_number) {
-  emplog <- log((died + 0.5) / (mosquito_number - died + 0.5))
-  plogis(emplog)
-}
-
 # the nearest neighbour null, and predictive distributions for the nulls -----
 
-# For each held-out record, average over the k nearest training records of the
-# same insecticide from the most recent two years available.
-
-# Pooled counts over the nearest neighbours of each held-out record - died and
-# tested summed over them, rather than a single proportion, so that uncertainty
-# in the predicted fraction can be represented by a beta posterior on those
-# counts.
+# The year the nearest neighbour null's window ends at, for a record of `year`.
+# The window is anchored at prediction time, not at the record's own year: the
+# most recent `n_years_prior` + 1 years of data that exist when the prediction
+# is made. For the spatial experiments training spans every year, so the anchor
+# is the record's own year and the window is the familiar {year, year - 1}.
+# For a forecast the training data stop at the cut, so the anchor is the last
+# training year and every held-out record draws on the same window — which is
+# the situation a person forecasting from that cut is actually in.
 #
-# Several neighbour counts at once. Neither the distance matrix nor the
-# per-record ordering of those distances depends on k, so both are computed once
-# and every k is read off the same cumulative sums. nn_oracle_draws() used to
-# call this once per candidate k and pay for the full distance matrix and a sort
-# per record fifteen times over (#12 review).
-#
-# `k_values` is a vector; the returned matrices have one row per held-out record
-# and one column per element of it, in that order.
-nn_counts_grid <- function(latitude,
-                           longitude,
-                           year,
-                           insecticide_type,
-                           training_data,
-                           k_values,
-                           n_years_prior = 1) {
-
-  # A missing row in outputs/optimal_nn.csv returns numeric(0) from the lookup
-  # in run_validation_folds.R, and every step below then degrades silently:
-  # sort(x)[integer(0)] is numeric(0), `<= numeric(0)` is logical(0),
-  # which(logical(0)) is integer(0), and sum() of no elements is 0. The result
-  # is a pooled count of 0 died out of 0 tested for every held-out record, whose
-  # Jeffreys posterior is Beta(0.5, 0.5) — so the "nearest neighbour null"
-  # becomes a random number generator with no data in it, and nothing errors.
-  # This is exactly what happened to the two spatial block folds, whose
-  # experiment name had no row in that file: their reported score of -0.86 was
-  # the score of the prior, not of a nearest neighbour model.
-  stopifnot(
-    is.numeric(k_values),
-    length(k_values) >= 1,
-    all(is.finite(k_values)),
-    all(k_values >= 1)
-  )
-
-  training_coords <- as.matrix(training_data[, c("longitude", "latitude")])
-  test_coords <- cbind(longitude, latitude)
-
-  dists <- fields::rdist.earth(test_coords, training_coords,
-                               miles = FALSE)
-
-  # The year window is anchored at prediction time, not at the record's own
-  # year: the most recent `n_years_prior` + 1 years of data that exist when the
-  # prediction is made. For the spatial experiments training spans every year,
-  # so the anchor is the record's own year and this is the familiar
-  # {year, year - 1}. For a forecast the training data stop at the cut, so the
-  # anchor is the last training year and every held-out record draws on the same
-  # window — which is the situation a person forecasting from that cut is
-  # actually in.
-  #
-  # Anchoring on the record's own year instead made the null weaker the further
-  # ahead it had to predict, for an indexing reason rather than an information
-  # one: a record one year past the cut saw the whole window, one five years past
-  # saw a single year of it, or none at all.
-  anchor <- pmin(year, max(training_data$year))
-  year_diff <- -1 * seq(0, n_years_prior)
-
-  n_test <- nrow(test_coords)
-  total_died <- matrix(NA_real_, nrow = n_test, ncol = length(k_values))
-  total_tested <- matrix(NA_real_, nrow = n_test, ncol = length(k_values))
-
-  # which training records a record may draw on depends only on its anchor year
-  # and its insecticide, so the masks are built once per distinct pair rather
-  # than once per record
-  mask_key <- paste(anchor, insecticide_type)
-  unique_key <- unique(mask_key)
-  key_index <- match(mask_key, unique_key)
-  valid_masks <- lapply(match(unique_key, mask_key), function(j) {
-    training_data$year %in% (anchor[j] + year_diff) &
-      training_data$insecticide_type == insecticide_type[j]
-  })
-
-  training_died <- training_data$died
-  training_tested <- training_data$mosquito_number
-
-  for (i in seq_len(n_test)) {
-
-    distance_vec <- dists[i, ]
-    valid <- valid_masks[[key_index[i]]]
-    masked_distance_vec <- ifelse(valid, distance_vec, Inf)
-
-    # If no training record matches this record's insecticide and year window,
-    # every masked distance is Inf, the threshold is Inf, and `<= threshold`
-    # then selects the entire training set — every insecticide, every year. That
-    # is not a nearest neighbour prediction, it is a global mean wearing one,
-    # and it is silent. It bites when the holdout runs further past the cut than
-    # `n_years_prior` reaches back: with a five-year forecast window and
-    # `n_years_prior = 3`, the fourth and fifth lead years have no valid
-    # training year at all. Fail here instead, so the caller has to set
-    # `n_years_prior` to at least the window length.
-    if (!any(valid)) {
-      valid_years <- anchor[i] + year_diff
-      stop("no training records in ", paste(range(valid_years), collapse = "-"),
-           " for ", insecticide_type[i], ": the nearest neighbour null has ",
-           "nothing to predict from")
-    }
-
-    # the k-th smallest masked distance is the threshold, and every record at or
-    # inside it is pooled - so ties at the threshold all count, and a k larger
-    # than the number of valid records gives an infinite threshold and pools the
-    # whole training set, exactly as the per-k version did. Sorting once and
-    # taking cumulative sums along that order makes each k an index lookup
-    order_index <- order(masked_distance_vec)
-    sorted_distance <- masked_distance_vec[order_index]
-    cumulative_died <- cumsum(training_died[order_index])
-    cumulative_tested <- cumsum(training_tested[order_index])
-
-    # findInterval() on an ascending vector returns the number of elements at or
-    # below the threshold, which is the size of the pooled set
-    n_pooled <- findInterval(sorted_distance[k_values], sorted_distance)
-
-    total_died[i, ] <- cumulative_died[n_pooled]
-    total_tested[i, ] <- cumulative_tested[n_pooled]
-
-  }
-
-  list(total_died = total_died,
-       total_tested = total_tested)
-
+# Anchoring on the record's own year instead made the null weaker the further
+# ahead it had to predict, for an indexing reason rather than an information
+# one: a record one year past the cut saw the whole window, one five years past
+# saw a single year of it, or none at all.
+nn_anchor_year <- function(year, training_years) {
+  pmin(year, max(training_years))
 }
 
-# the same for a single neighbour count, as a data frame of one column each
-predict_null_fixed_nn_counts <- function(latitude,
-                                         longitude,
-                                         year,
-                                         insecticide_type,
-                                         training_data,
-                                         n_nearest_neighbours,
-                                         n_years_prior = 1) {
+# The nearest bioassay: for each held-out record, the single training record of
+# the same insecticide in its year window (nn_anchor_year(), `n_years_prior` + 1
+# years) at the smallest distance between assay coordinates. Ties - records at
+# the same site - go to the most recent year, and any left (one site and year)
+# to a pick drawn from the stream seeded by `seed`, so a fold always picks the
+# same record. Returns, per held-out record, the chosen training row and its
+# distance in km.
+nearest_bioassay <- function(training_data, test_data, n_years_prior = 1,
+                             seed) {
 
-  stopifnot(length(n_nearest_neighbours) == 1)
+  dists <- fields::rdist.earth(
+    as.matrix(test_data[, c("longitude", "latitude")]),
+    as.matrix(training_data[, c("longitude", "latitude")]),
+    miles = FALSE)
 
-  counts <- nn_counts_grid(
-    latitude = latitude,
-    longitude = longitude,
-    year = year,
-    insecticide_type = insecticide_type,
-    training_data = training_data,
-    k_values = n_nearest_neighbours,
-    n_years_prior = n_years_prior
-  )
+  # which training records a record may draw on depends only on its anchor year
+  # and its insecticide, so the candidates are found once per distinct pair
+  anchor <- nn_anchor_year(test_data$year, training_data$year)
+  key <- paste(anchor, test_data$insecticide_type)
+  candidates <- lapply(split(seq_along(key), key), function(rows) {
+    j <- rows[1]
+    which(training_data$year >= anchor[j] - n_years_prior &
+            training_data$year <= anchor[j] &
+            training_data$insecticide_type == test_data$insecticide_type[j])
+  })
 
-  data.frame(total_died = counts$total_died[, 1],
-             total_tested = counts$total_tested[, 1])
+  saved <- if (exists(".Random.seed", globalenv())) .Random.seed
+  on.exit(if (is.null(saved)) rm(".Random.seed", envir = globalenv()) else
+    assign(".Random.seed", saved, envir = globalenv()))
+  set.seed(seed)
 
+  chosen <- integer(nrow(test_data))
+  distance <- numeric(nrow(test_data))
+  for (i in seq_len(nrow(test_data))) {
+    valid <- candidates[[key[i]]]
+    # with no record of the insecticide in the window the null has nothing to
+    # predict from: stop, rather than fall back to a wider set
+    if (length(valid) == 0) {
+      stop("no training records in ", anchor[i] - n_years_prior, "-",
+           anchor[i], " for ", test_data$insecticide_type[i],
+           ": the nearest bioassay null has nothing to predict from")
+    }
+    d <- dists[i, valid]
+    nearest <- valid[d == min(d)]
+    nearest <- nearest[training_data$year[nearest] ==
+                         max(training_data$year[nearest])]
+    if (length(nearest) > 1) {
+      nearest <- nearest[sample.int(length(nearest), 1)]
+    }
+    chosen[i] <- nearest
+    distance[i] <- min(d)
+  }
+
+  list(row = chosen, distance_km = distance)
 }
 
 # posterior draws of the predicted fraction from pooled counts, under a
@@ -212,107 +125,26 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 # Predictive distribution of the nearest neighbour null.
 #
 # This is not a competitor model to be optimised, it is a stand-in for what a
-# person would do without a model: read a site's value off the nearby recent
-# surveys. Tuning it separately for each experiment would build a series of new
-# models to compare against the one model under analysis, so it is not tuned at
-# all. Two specifications are reported instead, and neither involves a chosen
-# value:
-#
-#   the practice baseline - `n_neighbours = 1`, `n_years_prior = 1`: the single
-#     nearest record in the most recent two years available at prediction time.
-#     Short recency is justified a priori, since anyone running this
-#     surveillance knows resistance is moving fast, and the k-curves agree.
-#
-#   the oracle bound - nn_oracle_draws() below: the same method at whichever
-#     number of neighbours minimises its own error on the held-out records. It
-#     answers a different question, how well any such rule could have done in
-#     this test, and a bound is properly per-test.
-#
-# This replaces a tuned `n_neighbours` read from outputs/optimal_nn.csv. That
-# was chosen on an internal test set of 100 records sampled at random from the
-# training data, which sat a median of 0 km from their nearest usable neighbour
-# - 26% of them at the same site - while the held-out records sit at 36 km
-# (interpolation), 139 km (blocks) and 194 km (countries). Optimal k rises with
-# the distance that has to be reached, so tuning at 0 km chose it too small and
-# handicapped the baseline. The lookup also had no row for the block folds,
-# which silently reduced the null there to its prior (#12).
-nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
-                          n_years_prior = 1, n_draws = 1000) {
+# person would do without a model: read a site's value off the nearest recent
+# bioassay, the single nearest record in the most recent two years available at
+# prediction time (nearest_bioassay()). Tuning it would build a new model to
+# compare against the one under analysis, so it is not tuned at all. Its
+# fraction has a beta posterior from that bioassay's counts. Also returns the
+# chosen bioassay's distance (km) and year per held-out record, which the CV
+# figure's panel titles report.
+nn_null_draws <- function(training_data, test_data, n_years_prior = 1,
+                          n_draws = 1000, seed) {
 
-  counts <- predict_null_fixed_nn_counts(
-    latitude = test_data$latitude,
-    longitude = test_data$longitude,
-    year = test_data$year,
-    insecticide_type = test_data$insecticide_type,
-    training_data = training_data,
-    n_nearest_neighbours = n_neighbours,
-    n_years_prior = n_years_prior
-  )
+  nearest <- nearest_bioassay(training_data, test_data,
+                              n_years_prior = n_years_prior, seed = seed)
 
-  p_draws <- pooled_count_draws(counts$total_died,
-                                counts$total_tested,
-                                n_draws)
-
-  list(p_draws = p_draws,
-       test_df = test_data)
-
-}
-
-
-# The oracle bound: the nearest neighbour null at whichever number of
-# neighbours minimises its own mean squared error on the held-out records.
-#
-# This is deliberately given hindsight the dynamical model is not given, so that
-# no choice of neighbour count can be said to have handicapped the baseline. The
-# selection is one scalar over thousands of records, so the optimism it buys is
-# small, and it runs in the conservative direction for any claim that the
-# dynamical model beats the null.
-#
-# Minimised on mean squared error because that is what the comparison is
-# reported on - excess MSE and variance explained - so the bound is a bound on
-# the statistic actually quoted. The coverage and CRPS of the returned fold are
-# therefore at the MSE-optimal k, not at their own optima.
-nn_oracle_draws <- function(training_data, test_data,
-                            n_years_prior = 1, n_draws = 1000,
-                            k_grid = c(1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120,
-                                       200, 300, 500, 800)) {
-
-  observed <- test_data$died / test_data$mosquito_number
-
-  # one pass over the grid: the distances and their ordering are shared by every
-  # candidate k, and the winning k's counts are already in hand, so no further
-  # neighbour search is needed to draw from it
-  counts <- nn_counts_grid(
-    latitude = test_data$latitude,
-    longitude = test_data$longitude,
-    year = test_data$year,
-    insecticide_type = test_data$insecticide_type,
-    training_data = training_data,
-    k_values = k_grid,
-    n_years_prior = n_years_prior
-  )
-
-  predicted <- emplog_prop(counts$total_died, counts$total_tested)
-  # mean() per column rather than colMeans(): the two accumulate in different
-  # orders and so can differ in the last bits, and these numbers are compared
-  # against the per-k version this replaced
-  mse <- apply((observed - predicted) ^ 2, 2, mean)
-
-  best_index <- which.min(mse)
-  best <- k_grid[best_index]
-  if (best == max(k_grid)) {
-    warning("the oracle neighbour count is at the top of the grid (", best,
-            "); widen k_grid so the minimum is interior")
-  }
-
-  p_draws <- pooled_count_draws(counts$total_died[, best_index],
-                                counts$total_tested[, best_index],
+  p_draws <- pooled_count_draws(training_data$died[nearest$row],
+                                training_data$mosquito_number[nearest$row],
                                 n_draws)
 
   list(p_draws = p_draws,
        test_df = test_data,
-       n_neighbours = best,
-       k_grid = k_grid,
-       k_mse = mse)
+       nearest_km = nearest$distance_km,
+       nearest_year = training_data$year[nearest$row])
 
 }
