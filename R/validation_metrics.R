@@ -23,7 +23,7 @@
 #
 # Point metrics (MSE, excess, bias, reliability bins, pooled means) score the
 # map, the point prediction a reader would take from the published maps:
-# for the two-stage model the posterior mean without its site noise u and p,
+# for the two-stage model the posterior mean without its noise u, p and sy,
 # for every other model its predictive mean (#32; score_fold()). The
 # distributional metrics score each model's own predictive distribution.
 #
@@ -158,10 +158,10 @@ write.csv(coverage_curves, "outputs/cv_coverage.csv", row.names = FALSE)
 #
 # The envelope comes from the model's own posterior predictive distribution, so
 # a gap outside it is the model's error rather than the diagnostic's; for the
-# two-stage model that includes its fresh u and p, so the envelope is centred
-# off the map by the pull towards 0.5. That requires the posterior draws, so it
-# is computed per fold and then pooled by experiment, weighting each fold by
-# its held-out records.
+# two-stage model that includes its fresh u, p and sy, so the envelope is
+# centred off the map by the pull towards 0.5. That requires the posterior
+# draws, so it is computed per fold and then pooled by experiment, weighting
+# each fold by its held-out records.
 reliability <- all_scores %>%
   group_by(model, experiment) %>%
   group_modify(~ reliability_bins(.x$map, .x$observed, n_bins = 10)) %>%

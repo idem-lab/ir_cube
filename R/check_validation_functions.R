@@ -221,7 +221,7 @@ grid <- expand.grid(map = map_values, sd = noise_sds)
 e <- rnorm(1e6)
 monte_carlo <- mapply(function(m, s) mean((plogis(qlogis(m) + s * e) - m) ^ 2),
                       grid$map, grid$sd)
-floor_u <- model_floor_mse(grid$map, grid$sd, 0)
+floor_u <- model_floor_mse(grid$map, grid$sd)
 report("model floor matches Monte Carlo",
        max(abs(floor_u - monte_carlo)) < 1e-4,
        sprintf("(max |diff| %.1e)", max(abs(floor_u - monte_carlo))))

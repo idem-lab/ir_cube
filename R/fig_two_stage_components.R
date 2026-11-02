@@ -20,8 +20,8 @@
 # The target, on the logit scale, is m(s, t) + omega(s) + xi(s, t): m the
 # dynamical model's prediction, xi(s, t) the sum of the annual anomalies eta up
 # to t, eta AR(1) in time with Matern innovations; beyond the last data year T
-# eta is simulated forward. u and p are observation-level noise and appear in
-# neither figure.
+# eta is simulated forward. u, p and sy are observation-level noise and
+# appear in neither figure.
 
 type <- "Deltamethrin"
 figure_dir <- "figures/two_stage"
@@ -55,12 +55,23 @@ stopifnot(fit$n_obs == nrow(train_k),
           ncol(dynamical$logit_train) == nrow(train_k),
           max(abs(fit$m_ref - colMeans(dynamical$logit_train))) < 1e-12)
 T_k <- fit$T
+n_draws <- nrow(dynamical$logit_train)
+
+# Joint draws of the correction's node fields at every year 1995-2030, for the
+# 2000 paired draws: draw d pairs dynamical draw d with a latent draw from
+# N(mode, H^-1) shifted by the cut-posterior formula for it, and the AR(1)
+# forecast of eta beyond T (correction_node_draws()); one call for all the
+# draws, so that each CCD point's conditional fit is made once
+set.seed(4026 + k)
+fields <- correction_node_draws(
+  fit, years_all, n_draws,
+  m_draws_train = dynamical$logit_train[seq_len(n_draws), , drop = FALSE])
 
 
 # 2. example pixels ---------------------------------------------------------------
 
-# The data per pixel, and the fitted smooth correction at the mode
-# (omega + xi at T) at each sampled pixel
+# The data per pixel, and the posterior mean of the smooth correction
+# (omega + xi at T) at each sampled pixel, the mean of its draws
 coords_train <- coords_km(train_k)
 pixel_summary <- train_k %>%
   mutate(x_km = coords_train[, 1], y_km = coords_train[, 2]) %>%
@@ -72,9 +83,8 @@ pixel_summary <- train_k %>%
             n_before = sum(year <= 2008), n_after = sum(year >= 2014),
             .groups = "drop")
 pixel_coords <- as.matrix(pixel_summary[, c("x_km", "y_km")])
-pixel_summary$smooth_T <- as.vector(project_correction(
-  fit, correction_node_draws(fit, T_k, mean = TRUE),
-  mutate(pixel_summary, year = T_k)))
+pixel_summary$smooth_T <- rowMeans(project_correction(
+  fit, fields, mutate(pixel_summary, year = T_k)))
 
 # (i) well sampled: data both before the net scale-up (to 2008) and after it
 # (from 2014), and the most distinct years of data among such pixels
@@ -84,7 +94,7 @@ well <- pixel_summary %>%
   slice(1)
 
 # (iii) large correction: among pixels with at least three years of data, the
-# largest |omega + xi| at T at the mode, i.e. where the data pull the
+# largest posterior mean |omega + xi| at T, i.e. where the data pull the
 # prediction furthest from the dynamical model
 large <- pixel_summary %>%
   filter(n_years >= 3, cell != well$cell) %>%
@@ -137,11 +147,8 @@ report("pixels: %s", paste(sprintf("%s cell %i (%s, %.2f, %.2f; %i assays, %i ye
 
 # 3. draws at the pixels ------------------------------------------------------------
 
-# Every component at each pixel and year 1995-2030, for the 2000 paired draws:
-# draw d pairs dynamical draw d with a latent draw from N(mode, H^-1) shifted by
-# the cut-posterior formula for it, and the AR(1) forecast of eta beyond T
-# (correction_node_draws(), project_correction())
-n_draws <- nrow(dynamical$logit_train)
+# Every component at each pixel and year 1995-2030, for the 2000 paired draws
+# (the fields drawn above, project_correction())
 n_pix <- nrow(pixels)
 n_years_all <- length(years_all)
 
@@ -182,14 +189,9 @@ new_omega <- tibble(x_km = coords_pix[, 1], y_km = coords_pix[, 2],
                     year = fit$t0)
 correction <- array(NA_real_, c(n_years_all, n_pix, n_draws))
 omega <- matrix(NA_real_, n_pix, n_draws)
-set.seed(4026 + k)
-for (batch in split(seq_len(n_draws), ceiling(seq_len(n_draws) / 250))) {
-  fields <- correction_node_draws(
-    fit, years_all, length(batch),
-    m_draws_train = dynamical$logit_train[batch, , drop = FALSE])
-  correction[, , batch] <- project_correction(fit, fields, new)
-  omega[, batch] <- project_correction(fit, fields, new_omega)
-}
+correction[] <- project_correction(fit, fields, new)
+omega[] <- project_correction(fit, fields, new_omega)
+rm(fields)
 omega_array <- array(rep(omega, each = n_years_all), dim(correction))
 xi <- correction - omega_array
 eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]
@@ -355,7 +357,7 @@ for (ext in c("png", "pdf")) {
 
 # mortality intervals for the population fraction at each pixel-year: the
 # dynamical model alone (plogis(m)) and the two-stage model
-# (plogis(m + omega + xi), with the cut-posterior shift). u and p are
+# (plogis(m + omega + xi), with the cut-posterior shift). u, p and sy are
 # observation noise, like the assay-level (beta-binomial) noise, so none is
 # included
 summarise_draws <- function(values, model) {

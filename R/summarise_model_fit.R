@@ -32,8 +32,9 @@ rownames(effect_sizes) <- colnames(x_cell_years)
 round(effect_sizes, 2)
 
 # posterior predictive draws of the mortality of new assays at the observed
-# ones: for the two-stage model, with fresh pixel-year and pixel noise, at the
-# external per-type overdispersion; and the dynamical model's, at its own
+# ones: for the two-stage model, with fresh pixel-year, pixel and study-year
+# noise, at the external per-type overdispersion; and the dynamical model's, at
+# its own
 sims <- assay_draws(df, types)
 
 # get RMSE and MAE for observed data and posterior mean within-sample
@@ -390,8 +391,8 @@ locations_plot <- df %>%
 # ilogit(m + omega + xi), and the mortality in new bioassays of 100 mosquitoes
 # under binomial sampling from it, and under the model's own observation
 # process: beta-binomial sampling, at the per-type overdispersion, from the
-# mortality with fresh pixel-year and pixel noise, ilogit(m + omega + xi + u +
-# p). Draws x cells x years
+# mortality with fresh pixel-year, pixel and study-year noise, ilogit(m +
+# omega + xi + u + p + sy). Draws x cells x years
 sample_size_plot <- 100
 location_cell_ids <- locations_plot$cell_id
 preds_plot <- bind_rows(
