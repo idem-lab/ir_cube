@@ -35,11 +35,11 @@ df <- ir_africa %>%
   ungroup() %>%
   filter(
     # drop any from before when we have data on net coverage
-    year_start >= baseline_year
+    year >= baseline_year
   ) %>%
   mutate(
     # create an index to the simulation year (in 1-indexed integers)
-    year_id = year_start - baseline_year + 1,
+    year_id = year - baseline_year + 1,
     # add on cell ids corresponding to these observations,
     cell = cellFromXY(mask,
                       as.matrix(select(., longitude, latitude)))
@@ -61,13 +61,13 @@ df_most_sampled <- df %>%
   mutate(
     cell_year_type = sprintf("location %i\n(%i)\n%s",
                              cell_id,
-                             year_start,
+                             year,
                              insecticide_type)
   ) %>%
   group_by(
     cell_year_type,
     cell_id,
-    year_start,
+    year,
     insecticide_type
   ) %>%
   summarise(
@@ -99,7 +99,7 @@ df_most_sampled <- df %>%
   select(
     cell_year_type,
     cell_id,
-    year_start,
+    year,
     insecticide_type,
     count,
     # place
@@ -107,7 +107,7 @@ df_most_sampled <- df %>%
   left_join(
     mutate(df,
            index = row_number()),
-    by = c("cell_id", "year_start", "insecticide_type")
+    by = c("cell_id", "year", "insecticide_type")
   ) %>%
   mutate(
     Susceptibility = died / mosquito_number
@@ -145,10 +145,10 @@ df_most_sampled <- df %>%
 # seventeen in the data, and the other eight have no class in `classes_index`
 replicated_all <- df %>%
   filter(insecticide_type %in% types) %>%
-  group_by(cell_id, year_start, insecticide_type) %>%
+  group_by(cell_id, year, insecticide_type) %>%
   filter(n() > 1) %>%
   ungroup() %>%
-  mutate(group_key = paste(cell_id, year_start, insecticide_type))
+  mutate(group_key = paste(cell_id, year, insecticide_type))
 
 group_keys <- unique(replicated_all$group_key)
 type_names <- sort(unique(replicated_all$insecticide_type))

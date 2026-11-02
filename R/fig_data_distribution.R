@@ -19,7 +19,6 @@ colour_types <- scales::hue_pal(direction = -1)(9)
 
 df_plot <- df %>%
   rename(
-    year = year_start,
     country = country_name,
     insecticide = insecticide_type
   ) %>%

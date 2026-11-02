@@ -325,14 +325,14 @@ print(by_fold %>%
 
 by_year <- by_group(
   all_scores %>% filter(startsWith(experiment, "temporal_forecasting")),
-  year_start
+  year
 )
 write.csv(by_year, "outputs/cv_by_year.csv", row.names = FALSE)
 
 if (nrow(by_year) > 0) {
   cat("\nforecasting, by lead year:\n")
   print(by_year %>%
-          select(experiment, year_start, model, n, mean_observed,
+          select(experiment, year, model, n, mean_observed,
                  mean_predicted, bias, mean_pit, excess) %>%
           mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
           as.data.frame())

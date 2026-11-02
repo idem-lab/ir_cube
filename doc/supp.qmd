@@ -13,8 +13,96 @@ TO DO: briefly describe susceptibility bioassay dta; discriminating concentratio
 
 ### Bioassay data processing
 
-TO DO: describe database consolidation, subsetting to WHO bioassays
-QC checks
+We combined insecticide resistance test results from five public databases. The databases cite the same paper in different ways, so we first identified the paper behind each citation. The same test was often entered more than once, so we then removed copies in three stages:
+
+1. **Within one database.** Where a database held the same paper twice, or the same test in two of its downloads, we kept one copy.
+2. **Across databases.** Many papers were entered separately by several databases, sometimes with different sites, numbers or errors. For each paper, we kept one database's whole version: the one that looked most complete and consistent.
+3. **Across citations.** The same results could appear under two citations, such as a paper and a government report. Where two records matched exactly, we treated them as copies and kept one.
+
+Before this, we kept only standard WHO tube tests on the *An. gambiae* complex in Africa, checked each record's country against its location, and dropped impossible values. Cases the rules couldn't settle were decided by manual review against the original papers: versions that disagreed, matches that could be coincidence, and tests reporting unusually large numbers of mosquitoes.
+
+The steps below give the details. One database's records of one paper were a *version* of the paper. Step 7 chose one version of each paper before step 8 compared records under different citations, so a version was never changed by another version of the same paper.
+
+1. **Combine the databases.** We combined the bioassay records of five databases, listed here in the order of preference used in steps 6 to 8:
+    - the IR Mapper analysis-ready extracts (Moyes et al. 2019), abstracted and checked to one standard;
+    - the Vector Atlas;
+    - the Malaria Threats Map (MTM): its discriminating-concentration and intensity bioassays;
+    - the IR Mapper downloads of August 2022 and September 2024.
+
+    IR Mapper 2022's records cited to Moyes et al. 2019 were left out, as they were the IR Mapper extracts' own records.
+2. **Standardise names and identify papers.** We standardised the names of countries, insecticides and species, and identified the paper each citation refers to, by the first of:
+    - a DOI or PubMed ID in the citation or its link, or a DOI on the web page the link points to;
+    - a search of Crossref and Europe PMC for the citation's title;
+    - the paper another database's citation was identified as, with the same first author and year;
+    - the first page of the PDF the citation linked to, which gave the paper's title, authors, journal and year (for journals without DOIs), where its first author and year agreed with the citation;
+    - a search of Crossref and Europe PMC for the citation's first author and year with words of the field (e.g. insecticide, *Anopheles*), choosing between several candidates by the countries and sites of the citation's records.
+
+    A match had to agree with the citation's first author and year (within one year, for online and print dates). A preprint counted as the paper it became. Citations that couldn't be identified this way were identified by manual review. Citations that weren't papers were kept as cited: reports of the PMI, WHO or a national malaria control programme, reports cited by their title rather than their authors, personal communications, and citations that manual review found to be reports.
+3. **Select records.** We kept WHO tube tests (not bottle, larval or synergist assays) of the *An. gambiae* complex in African countries, with coordinates, a year, an insecticide, a concentration and a mortality.
+    - We dropped the Vector Atlas's tests with a synergist (e.g. PBO) or at an intensity other than 1. The Vector Atlas recorded these in their own columns and gave the insecticide's base concentration, so they would have looked like standard tests.
+    - The other databases gave no synergist tests, and gave intensity tests at their own concentrations.
+    - We dropped records whose coordinates were given only to whole degrees (to within about 55 km), too coarse for the models' 5 km pixels.
+    - We checked each record's country label against its coordinates. A record more than 5 km outside its labelled country took the country it lay in (or was within 5 km of), and was dropped if there was none.
+4. **Fill in missing numbers tested.** Where the number of mosquitoes tested was missing, we used the number nearest 100 (from 50 to 200) that gave a whole number dead, or else 100, and marked it as imputed (`n_imputed` in the data). Only recorded numbers were used to find copies and to compare versions.
+5. **Drop impossible mortalities.** We dropped records whose positive mortality was less than one mosquito: proportions, or numbers dead, recorded as percentages.
+6. **Drop repeats within one database.**
+    - **A paper cited in two ways.** Where a database cited one paper in two ways (for example, by its online and print years), it had entered the paper twice. We dropped records under one citation that matched a record under the other (the same number tested and number dead, overlapping years, and within 10 km).
+    - **A paper entered twice in a download.** Two records of one paper in one download were repeats if they agreed in every field we used: site name (ignoring case and accents), map pixel, years, month, generation, species, insecticide, concentration, test type, number tested and number dead. Where at least half of a paper's records in a download were repeats, the paper had been entered twice or a row copied down, and we kept one of each.
+    - **One test in two downloads.** The IR Mapper extracts had separate species and complex files, and MTM had separate discriminating-concentration and intensity downloads. Two records of one version in two downloads were one test if they were at the same coordinates, in the same month and generation, with the same number tested and number dead (or, where a number tested was missing, mortalities within 0.5 percentage points).
+    - **Complex-level totals.** We dropped complex-level records that equalled the sum of the version's own species-level records at the same pixel, year, insecticide and concentration.
+
+    Otherwise we treated a paper's records as separate tests, even where two gave the same result. A paper can report many tests of one insecticide at a site in a year, and we trusted the authors and the databases' extractors.
+7. **Keep one version of each paper.** Many papers were in two or more databases, and their versions could differ in their sites and years, in their numbers tested (one database might give a placeholder, such as 100 for every test), or through errors (such as every test entered as 100% mortality, or every test put in one year). Matching records one by one would have mixed the versions, taking one database's site with another's number tested, and would have kept an error wherever its records didn't match. So for each paper in two or more databases, we kept one database's whole version and dropped the others.
+    - **What counted as a paper.** A citation identified as a paper in step 2. A personal communication counted as its author's paper of the same year in the same country, where there was one. Records whose citation wasn't a paper went to step 8.
+    - **Choosing the version.** We measured each version on the records the models used (the nine modelled insecticides, each at its most common concentration, from 1995), so that tests the models didn't use, such as intensity tests, couldn't decide the choice. There were three measures:
+        - whether its recorded numbers tested varied (one number for every test is often a placeholder);
+        - its places: the number of model pixels (1/24 degree, about 5 km) its records were in;
+        - its years: the number of different years its records gave, as the models read them (the middle of a record's years, rounded down).
+
+      The best version was at least as good as every other version on all three measures, and better on at least one. Where versions tied on all three, we kept the one with more records the models used, then the one from the database listed first in step 1.
+    - **Checking what was dropped.** Dropping a version lost nothing if the kept version held the same tests with the same results. So we checked each modelled record of a dropped version against the kept version. The record was matched if the kept version had either:
+        - a record of the same test (the same insecticide and concentration, a site within 10 km or with the same name within 100 km, and overlapping years) with mortality within 10 percentage points, which is about two standard errors for a test of 100 mosquitoes at 50% mortality; or
+        - a record with exactly the same number tested and number dead within the distances used in step 8, as databases placed one site differently (e.g. "ADA" in the Vector Atlas and "Apac (ADA)" about 20 km away in IR Mapper 2022; Verhaeghen et al. 2010).
+
+      For example, the IR Mapper extracts gave deltamethrin mortality at Mabogini (Mbepera et al. 2017) as 45% to 61%, and the Vector Atlas gave 100% for the same tests, so the Vector Atlas's records were unmatched.
+    - **Papers decided by manual review.** A paper was flagged for manual review where:
+        - no version was best on all three measures (for example, one version's numbers tested varied and another gave more years);
+        - a dropped version had 5 or more unmatched records, so it held tests the kept version lacked or disagreed with it, and the data couldn't say which was right (fewer than 5 made little difference to the models);
+        - the kept version had a record of more than 500 mosquitoes tested, which is five times a WHO tube test, and another version had none. Such records carry the most weight in the models, and were often a study's total entered as one test. A paper in only one database with such a record was also flagged.
+
+      The reviewer compared the versions' records side by side with the paper, and kept one version, or dropped the paper where no version was usable (e.g. every version's coordinates were wrong).
+8. **Drop copies under different citations.** Among the records left (the kept version of each paper, and the records whose citation wasn't a paper), we looked for one test under two citations, in one database or two. All of a paper's citations counted as one citation.
+    - **Matches** were two records under different citations with the same country, insecticide and concentration, overlapping years (from a record's start year to its end year, where given), and the same number tested and number dead (or, where a number tested was missing, mortalities within 0.5 percentage points). At 0% or 100% mortality, the species also had to agree, or one record had to be identified only to the complex. They had to be within 10 km in one database, or within 100 km (50 km where a number tested was missing) in different databases, as the databases placed sites differently. Records that agreed in all but concentration were not matches: the models used each insecticide's most common concentration, so at most one of them was modelled. Matches were paired one to one: records with the same site name first (ignoring case, accents and punctuation), then the nearest, so each record paired with at most one record of each other citation.
+    - If two citations shared two or more matches with mortality between 0% and 100%, we assumed they reported the same data (for example, a paper and a report that included its results), and considered all their matches to be copies.
+    - Otherwise their matches were mostly at 0% or 100%, which separate tests often share. Where two citations had five or more such matches, each was decided by manual review of the papers' sites, methods and authors.
+    - Where they had fewer than five, we considered all of them to be copies (see the checks below).
+    - We also considered two kinds of record to be copies of a record in another database:
+        - a record whose mortality was on the wrong scale: read as a number dead or a proportion, it gave the number dead of a record in another database with the same country, years, insecticide, concentration and number tested, within 100 km (unless it also matched a record on its own scale in another database);
+        - a record that pooled a study's separate tests at a site: its number tested equalled the sum of the tests in another database within 25 km, and its mortality was within 5 percentage points of theirs pooled.
+    - Of each pair of copies, we kept the record with a recorded number tested, then the one from the database listed first in step 1.
+9. **Label studies and years.** We labelled each study by its paper's first author's surname and year of publication (or else its citation), within a country, with a letter where two papers in a country shared them. The models used one year for each test, the middle of its years rounded down, and a study in a year was a survey.
+
+Checks of these choices (not used to classify records):
+
+- **Distances in step 8.** The databases georeferenced sites differently: only 67% of copies between databases were in the same 1/24 degree (about 5 km) pixel.
+- **Pooled tests in step 8.** 27 records had a number tested equal to the sum of a study's tests at a site in another database. 16 of them had mortality within 5 percentage points of the tests' pooled mortality (8 within half a point), 2 between 5 and 10 points, and 9 more than 10 points away, as expected by chance.
+- **Concentrations in step 8.** 201 pairs of kept records in two databases (322 records) agreed in all but concentration, e.g. pirimiphos-methyl at 0.25% and 1%, or alpha-cypermethrin at 0.05% and 0.5%. Between 0% and 100% mortality, 45 of them matched on the number tested and number dead, against about 3 expected by chance, so nearly all were one test with one concentration mis-entered.
+- **Repeats in step 6.** 72 versions had repeated records in a download. In 26 of them, three quarters or more of their records were repeats, and in 45, 41% or fewer. One had 2 repeated records of 4 (Djouaka et al. 2008 in IR Mapper 2022). The 328 repeated records of the 45 were kept as separate tests: a paper reporting many tests of one insecticide at a site in a year can give two the same result, and at 0% or 100% mortality most couldn't be told apart.
+- **The database order in step 1.** Where a test was in three or more databases' versions of a paper, and one database's record was more than 3 percentage points from all the others', that database was the IR Mapper extracts for 0.9% of its records in such tests, IR Mapper 2022 for 2.9%, the Vector Atlas for 3.0%, MTM for 4.2%, and IR Mapper 2024 for 12 of its 44. This supported putting the extracts first and IR Mapper 2024 last; the others differed little.
+- **The threshold of five in step 8.** In an earlier manual review, 200 pairs of matches within one database, under citations sharing fewer than two results between 0% and 100%, were decided: 144 were copies and 56 separate tests (recorded in `review/bioassay_duplicates.csv` at tag `bioassay-copy-decisions-6439a06`). The share of separate tests did not fall with the number of matches between the two citations: 27% where they had one, 23% two, 17% three or four, and 31% five or more. So the threshold was set by how much a wrong decision would change the data, not by how likely one was. As most were copies at every number, fewer than five were considered copies.
+- **Manual review.** In step 2, 39 citations were identified by manual review. Of 291 papers in two or more databases, 69 were flagged in step 7: for 33 the reviewer kept the version the rule chose, for 31 another version, and 5 were dropped as unusable in every version. 12 papers in one database with records of more than 500 mosquitoes tested were also flagged: 10 were kept and 2 dropped. In step 8, 176 pairs of matches under 18 pairs of citations were decided by manual review: 147 copies and 29 separate tests.
+- **Missing or stale decisions.** The prep warned of any paper or pair of matches flagged for manual review without a decision, and stopped if a decision was for a paper or pair that no step flagged.
+
+```{r echo = FALSE}
+attrition <- read.csv("../outputs/review/bioassay_attrition.csv",
+                      check.names = FALSE)
+knitr::kable(
+  t(attrition[, -1]),
+  col.names = attrition$source,
+  caption = paste("Number of bioassay records read from each source, removed",
+                  "at each step, and kept.")
+)
+```
 
 ### Bioassay data spatial coverage
 

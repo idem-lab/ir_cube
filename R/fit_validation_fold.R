@@ -205,8 +205,8 @@ fold_assay_draws <- function(fit, train_df, before_years = NULL, df,
   rm(parameters)
 
   training <- transmute(train_df, type_id, lon = longitude, lat = latitude,
-                        year = year_start, cell, died, mosquito_number,
-                        before = year_start %in% before_years)
+                        year, cell, died, mosquito_number,
+                        before = year %in% before_years)
   before_rows <- train_df[training$before, ]
   stopifnot(nrow(before_rows) == NROW(fit$before_df),
             identical(paste(before_rows$cell_id, before_rows$type_id,

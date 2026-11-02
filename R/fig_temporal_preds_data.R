@@ -18,9 +18,7 @@ source("R/two_stage_predictions.R")
 
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
-final_data_year <- 2024
-invisible(list2env(modelled_bioassays(baseline_year, final_data_year),
-                   environment()))
+invisible(list2env(modelled_bioassays(baseline_year), environment()))
 years_predict <- baseline_year:final_data_year
 
 # set colours
@@ -44,7 +42,6 @@ llin_pyrethroids <- c("Alpha-cypermethrin",
 # tidy up column names
 df_sub <- df %>%
   rename(
-    year = year_start,
     country = country_name,
     insecticide = insecticide_type
   )

@@ -46,7 +46,7 @@ cell_coordinates <- function(cells) {
 fold_geometry <- function(training, test, experiment, fold) {
 
   keys <- test %>%
-    distinct(cell, year_start, insecticide_type)
+    distinct(cell, year, insecticide_type)
 
   distance <- fields::rdist.earth(cell_coordinates(keys$cell),
                                   cell_coordinates(training$cell),
@@ -62,7 +62,7 @@ fold_geometry <- function(training, test, experiment, fold) {
   # training observation at that pixel is from a later year than the held-out
   # record, which should not happen in a forecasting experiment and is how the
   # training set leak showed itself
-  last_year <- tapply(training$year_start, training$cell, max)
+  last_year <- tapply(training$year, training$cell, max)
 
   # computed outside the mutate: a column created earlier in a mutate() call
   # shadows a variable of the same name later in it, which silently turned the
@@ -77,7 +77,7 @@ fold_geometry <- function(training, test, experiment, fold) {
            distance_any = nearest_any,
            distance_same = nearest_same,
            n_within_radius = within_radius,
-           years_since_cell = year_start -
+           years_since_cell = year -
              as.numeric(last_year[as.character(cell)]),
            .before = everything())
 

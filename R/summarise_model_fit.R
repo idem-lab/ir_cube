@@ -136,7 +136,7 @@ plot(dharma_not_ddt)
 
 # no evidence of temporal variation in model misspecification
 z <- qnorm(dharma$scaledResiduals)
-plot(z ~ jitter(df$year_start),
+plot(z ~ jitter(df$year),
      cex = 0.5)
 abline(h = 0)
 
@@ -332,7 +332,7 @@ locations_plot <- df %>%
   group_by(cell) %>%
   filter(
     n() >= 30,
-    n_distinct(year_start) >= 8,
+    n_distinct(year) >= 8,
     n_distinct(insecticide_type) >= 3
   ) %>%
   select(
@@ -419,7 +419,7 @@ preds_plot <- bind_rows(
     # uncertainty and sampling error) for observed mortality from binomial
     # sampling, and from the model's observation process
     expand_grid(
-      year_start = years_predict,
+      year = years_predict,
       cell_id = location_cell_ids
     ) %>%
       mutate(
@@ -468,7 +468,7 @@ colours_plot <- insecticide_colours()[insecticides_plot_small]
 preds_plot %>%
   ggplot(
     aes(
-      x = year_start,
+      x = year,
       y = Susceptibility,
       group = place,
       fill = insecticide_type
@@ -505,7 +505,7 @@ preds_plot %>%
   ) +
   geom_point(
     aes(
-      x = year_start,
+      x = year,
       y = Susceptibility,
       group = place,
       size = mosquito_number

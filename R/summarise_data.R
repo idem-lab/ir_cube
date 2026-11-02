@@ -24,10 +24,10 @@ summarise_bioassays <- function(data) {
       records = n(),
       mosquitoes = sum(mosquito_number),
       locations = n_distinct(latitude, longitude),
-      location_years = n_distinct(latitude, longitude, year_start),
+      location_years = n_distinct(latitude, longitude, year),
       countries = n_distinct(country_name),
-      year_min = min(year_start),
-      year_max = max(year_start),
+      year_min = min(year),
+      year_max = max(year),
       .groups = "drop"
     )
 }
