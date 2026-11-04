@@ -217,7 +217,7 @@ region_lines <- country_levels %>%
 
 trend_plot <- ggplot(value_type(trend_data), aes(year, exp(y))) +
   geom_line(aes(group = country_name), colour = "grey75", linewidth = 0.3) +
-  geom_point(aes(colour = value, shape = value), size = 1.6) +
+  geom_point(aes(colour = value, shape = value), size = 2.2) +
   geom_ribbon(aes(year, ymin = exp(lower), ymax = exp(upper)),
               data = region_lines, inherit.aes = FALSE,
               fill = "black", alpha = 0.15) +
@@ -234,7 +234,7 @@ trend_plot <- ggplot(value_type(trend_data), aes(year, exp(y))) +
   theme_minimal(base_size = 9) +
   theme(legend.position = "bottom", panel.grid.minor = element_blank())
 ggsave("figures/faostat_trend_regional_fits.png", trend_plot,
-       width = 12, height = 4, dpi = 150, bg = "white")
+       width = 12, height = 4, dpi = 300, bg = "white")
 
 # Caption: the trend per region (slope of log insecticide use per ha of
 # cropland, per year) in the model with regional slopes, with 95% intervals,
@@ -253,11 +253,11 @@ region_slopes <- imap(fits, function(fit, name) {
 slope_plot <- ggplot(region_slopes, aes(slope, region)) +
   geom_vline(aes(xintercept = common), linetype = 2, colour = "grey50") +
   geom_vline(xintercept = 0, colour = "grey80") +
-  geom_pointrange(aes(xmin = lower, xmax = upper), size = 0.3) +
+  geom_pointrange(aes(xmin = lower, xmax = upper), size = 0.5) +
   facet_wrap(~ data, scales = "free_x") +
   labs(x = "Slope of log insecticide use per ha of cropland, per year",
        y = NULL) +
   theme_minimal(base_size = 9) +
   theme(panel.grid.minor = element_blank())
 ggsave("figures/faostat_trend_regional_slopes.png", slope_plot,
-       width = 7, height = 3.5, dpi = 150, bg = "white")
+       width = 7, height = 3.5, dpi = 300, bg = "white")

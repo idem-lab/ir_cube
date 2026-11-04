@@ -202,7 +202,8 @@ preds_plot %>%
     range = c(1, 4),
     n.breaks = 6
   ) +
-  facet_grid(insecticide_type ~ place) +
+  # a row per site, so more sites make the figure taller, not wider
+  facet_grid(place ~ insecticide_type) +
   # decades, so the labels of neighbouring panels don't run together
   scale_x_continuous(breaks = c(2000, 2010, 2020)) +
   guides(
@@ -214,13 +215,11 @@ preds_plot %>%
     ylim = c(0, 1)
   ) +
   theme_minimal() +
-  ggtitle(
-    "Modelled population-level mortality and bioassay results at heavily sampled locations"
-  )
+  theme(legend.position = "bottom",
+        strip.text.y = element_text(angle = 0, hjust = 0))
 
 ggsave("figures/fit_subset.png",
        bg = "white",
        scale = 0.8,
-       # 18 for the four pixels this showed before
-       width = 4.5 + 3.4 * nrow(locations_plot),
-       height = 7)
+       width = 10,
+       height = 1.5 + 1.9 * nrow(locations_plot))

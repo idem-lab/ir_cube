@@ -172,7 +172,11 @@ crops_implicated <- c(
 crops <- c(crops_group, crops_implicated)
 names(crops) <- str_to_sentence(names(crops))
 
-crops_mask <- terra::mask(crops, pf_water_mask)
+# production is very skewed, so it is coloured on a log scale, with the
+# smallest values (below a thousandth of the maximum) all the lowest colour
+crop_floor <- 1e-3
+crops_mask <- terra::mask(crops, pf_water_mask) %>%
+  terra::clamp(lower = crop_floor, values = TRUE)
 ggplot() +
   africa_bg +
   geom_spatraster(
@@ -180,12 +184,13 @@ ggplot() +
   ) +
   country_borders +
   scale_fill_gradient(
-    # labels = scales::percent,
-    transform = "sqrt",
+    transform = "log10",
+    breaks = c(0.001, 0.01, 0.1, 1),
+    labels = c("0.001 or less", "0.01", "0.1", "1"),
     low = "#eef8e4",
     high = "#003d16",
     name = "Relative production",
-    limits = c(0, 1),
+    limits = c(crop_floor, 1),
     na.value = "transparent") +
   facet_wrap(~lyr, nrow = 2) +
   ggtitle(

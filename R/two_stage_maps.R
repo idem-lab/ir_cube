@@ -684,8 +684,7 @@ bind_rows(lapply(insecticides_plot, function(type) {
   geom_pointrange(size = 0.4, linewidth = 0.6) +
   facet_wrap(~name, scales = "free_x", nrow = 1, labeller = label_parsed) +
   scale_colour_manual(values = insecticides_col, guide = "none") +
-  labs(x = NULL, y = NULL,
-       title = "Second-stage hyperparameters, final model, fitted to all data") +
+  labs(x = "Posterior mean and 95% interval", y = NULL) +
   theme_minimal()
 ggsave(file.path(figure_dir, "map_hyperparameters.png"),
        bg = "white", width = 14, height = 3.5, dpi = 200)

@@ -111,7 +111,7 @@ coverage_plot <- coverage_lines %>%
   scale_linetype_manual(values = c("Held out" = 1,
                                    "In sample (full fit)" = 3),
                         name = "") +
-  scale_x_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent, breaks = c(0, 0.5, 1)) +
   scale_y_continuous(labels = scales::percent) +
   coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
   labs(
@@ -149,6 +149,7 @@ reliability_plot <- reliability %>%
                       name = "") +
   scale_linewidth_manual(values = model_widths * 0.7, breaks = figure_models,
                          name = "") +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
   coord_equal() +
   guides(colour = "none", linewidth = "none") +
   labs(
@@ -161,8 +162,9 @@ reliability_plot <- reliability %>%
 
 main_figure <- coverage_plot / reliability_plot +
   plot_layout(guides = "collect") +
-  plot_annotation(tag_levels = "a") &
-  theme(legend.position = "bottom")
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom",
+        panel.spacing.x = unit(1, "lines"))
 
 ggsave("figures/CV_predictive_calibration.png",
        main_figure,

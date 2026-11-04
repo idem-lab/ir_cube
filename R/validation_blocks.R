@@ -465,7 +465,11 @@ if (identical(environment(), globalenv())) {
       scale_colour_manual(values = block_colours, name = "Held out in fold",
                           drop = FALSE) +
       scale_size_area(max_size = 4.5, name = "Bioassays",
-                      limits = c(0, max_records)) +
+                      limits = c(0, max_records),
+                      breaks = function(limits) {
+                        breaks <- scales::breaks_extended()(limits)
+                        breaks[breaks > 0]
+                      }) +
       coord_sf(expand = TRUE) +
       labs(x = NULL, y = NULL, title = this_country) +
       theme_minimal(base_size = 11) +

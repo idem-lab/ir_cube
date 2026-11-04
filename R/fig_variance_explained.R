@@ -61,7 +61,7 @@ distance <- function(panel) {
   sprintf("Median %s from nearest bioassay", km(panel))
 }
 distance_years <- function(panel) {
-  sprintf("Median %s, %s from nearest bioassay", km(panel), years(panel))
+  sprintf("Median %s, %s<br>from nearest bioassay", km(panel), years(panel))
 }
 panel_titles <- c(
   A = title("A) In sample", "Prediction at location with a bioassay"),
