@@ -590,7 +590,20 @@ fit_hyper_intervals <- function(fit) {
 # to first order the score there changes by A' W (m_ref - m_new), with W the
 # beta-binomial weight at the mode (precision_obs), so the mode moves by
 # H^-1 A' W (m_ref - m_new). m_new may have one column per dynamical draw; the
-# factor of H is reused for all
+# factor of H is reused for all.
+#
+# This is the conditional Normal approximation implied by a Laplace
+# approximation of the cut posterior: Pompe, Kasprzak & Jacob, "Asymptotics of
+# cut distributions and robust modular inference using Posterior Bootstrap",
+# arXiv:2110.11149, Sec. 3.1 (Cut-Laplace, eq. 15); see also Frazier & Nott
+# (2025) Bayesian Analysis 20(4):1647-1675, doi:10.1214/24-BA1448, who replace
+# per-draw refits with a Normal approximation and find the joint-Laplace
+# conditional the less accurate one. Moving a latent Gaussian model's mode by
+# one Newton step instead of refitting follows Liu & Rue (2024) SORT
+# 49(1):121-146, arXiv:2210.04482, and the one-step approximate leave-one-out
+# of Rahnama Rad & Maleki (2020) JRSS B 82(4):965-996,
+# doi:10.1111/rssb.12374. On the final fit its error against exact refits is
+# 1-3% of the posterior SD of the prediction (R/check_mode_shift.R)
 correction_mode_shift <- function(fit, m_new) {
   rhs <- Matrix::crossprod(fit$A_latent,
                            fit$precision_obs * (fit$m_ref - as.matrix(m_new)))

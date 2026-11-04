@@ -16,6 +16,12 @@
 # the bioassays. That SD is at the fitted hyperparameters: the variance over
 # all the mechanistic draws of m plus its one-step shift, plus the latent
 # variance around the shifted mode, diag(A H^-1 A').
+#
+# The shift is the cut-posterior Laplace conditional of Pompe, Kasprzak &
+# Jacob (arXiv:2110.11149, Sec. 3.1); Frazier & Nott (2025, Bayesian Analysis,
+# doi:10.1214/24-BA1448) find that conditional less accurate than their
+# alternative, which is why it is checked here against exact refits. The
+# literature is in the comment of correction_mode_shift().
 
 source("R/packages.R")
 source("R/two_stage_predictions.R")

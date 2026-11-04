@@ -398,7 +398,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
     data = pop_mort_sry_pyrethroid,
     fill = pyrethroid_blue,
     colour = pyrethroid_blue,
-    size = line_size,
+    linewidth = line_size,
     lineend = "round"
   ) +
   geom_point(
@@ -442,7 +442,7 @@ all_insecticides_fig <- pop_mort_sry %>%
       ymax = susc_pop_upper,
       ymin = susc_pop_lower,
     ),
-    size = line_size
+    linewidth = line_size
   ) +
   geom_point(
     data = df_overall_plot,
@@ -630,7 +630,7 @@ region_all <- region_pop_mort_sry %>%
       fill = region,
     ),
     colour = grey(0.2),
-    size = 0.1
+    linewidth = 0.1
   ) +
   facet_wrap(~insecticide_type_label_2,
              ncol = 3) +
