@@ -358,32 +358,38 @@ country_lines <- map(seq_along(main$built$countries), function(i) {
 }) %>%
   bind_rows()
 
+value_labels <- c(official = "Reported by the country (FAOSTAT flag A)",
+                  estimated = "Estimated by FAO (flags E and X)")
 value_type <- function(d) {
-  mutate(d, value = if_else(official, "official (A)", "estimated (E, X)"))
+  mutate(d, value = if_else(official, value_labels[["official"]],
+                            value_labels[["estimated"]]))
 }
+
+# Caption: FAOSTAT insecticide use (item 1309, kg active ingredient) per ha of
+# cropland, per country and year, by region. Black: the regional trend (the
+# region's mean country intercept and the regional slope), with its 95%
+# interval; grey lines: the fitted country trends.
 
 trend_plot <- ggplot(value_type(trend_data), aes(year, exp(y))) +
   geom_line(aes(year, exp(median), group = country_name),
             data = country_lines,
             colour = "grey70", linewidth = 0.3) +
-  geom_point(aes(colour = value, shape = value), size = 0.9) +
+  geom_point(aes(colour = value, shape = value), size = 1.6) +
   geom_ribbon(aes(year, ymin = exp(lower), ymax = exp(upper)),
               data = region_lines, inherit.aes = FALSE,
               fill = "black", alpha = 0.15) +
   geom_line(aes(year, exp(median)), data = region_lines,
             inherit.aes = FALSE, linewidth = 0.8) +
-  scale_colour_manual(values = c("official (A)" = "#1f5fa8",
-                                 "estimated (E, X)" = "#9a9a9a"),
+  scale_colour_manual(values = setNames(c("#1f5fa8", "#9a9a9a"),
+                                        value_labels),
                       name = NULL) +
-  scale_shape_manual(values = c("official (A)" = 16,
-                                "estimated (E, X)" = 1), name = NULL) +
+  scale_shape_manual(values = setNames(c(16, 1), value_labels), name = NULL) +
   scale_y_log10() +
   facet_wrap(~ region, nrow = 1) +
-  labs(x = NULL, y = "insecticide, kg a.i. per ha cropland",
-       caption = paste("Black: regional trend (mean country intercept, regional slope), 95% interval.",
-                       "Grey lines: fitted country trends. FAOSTAT RP, item 1309.")) +
+  labs(x = NULL,
+       y = "Insecticide use (kg active ingredient per ha of cropland)") +
   theme_minimal(base_size = 9) +
-  theme(legend.position = "top", panel.grid.minor = element_blank())
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
 ggsave("figures/faostat_trend_regional_fits.png", trend_plot,
        width = 12, height = 4, dpi = 150, bg = "white")
 
@@ -405,10 +411,13 @@ slope_plot <- ggplot(slope_long, aes(slope, region, fill = fit)) +
   scale_fill_manual(values = c(main = "#1f5fa8",
                                official_only = "#e08a1e",
                                no_common_share = "#9a9a9a"),
+                    labels = c(main = "All values",
+                               official_only = "Values reported by countries only",
+                               no_common_share = "Without the common-share estimates"),
                     name = NULL) +
-  labs(x = "slope of log insecticide per ha cropland, per year",
+  labs(x = "Slope of log insecticide use per ha of cropland, per year",
        y = NULL) +
   theme_minimal(base_size = 9) +
-  theme(legend.position = "top", panel.grid.minor = element_blank())
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
 ggsave("figures/faostat_trend_regional_slopes.png", slope_plot,
        width = 7, height = 5, dpi = 150, bg = "white")

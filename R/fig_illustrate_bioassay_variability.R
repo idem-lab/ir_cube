@@ -1,5 +1,10 @@
-# illustrate the inherent variability in biassay data at a set of locations with
-# high sampling density
+# The overdispersion of bioassays, rho, per insecticide type, fitted to every
+# group of replicate bioassays (outputs/bioassay_rho_hierarchical.csv and
+# bioassay_rho_type_draws.rds), its check against replicate pairs
+# (bioassay_rho_pair_check.csv), and the power of cluster-stratified bioassays
+# (figures/cluster_sampling_power.png). The figure of replicate bioassays at
+# the most sampled places is R/fig_bioassay_variability.R, from these
+# estimates.
 
 # greta first, so python starts before terra and sf are attached
 source("R/greta_setup.R")
@@ -20,17 +25,6 @@ rm(modelled)
 
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
-
-insecticides_plot <- tibble(
-  insecticide = types,
-  class = classes[classes_index]
-) %>%
-  arrange(desc(class), insecticide) %>%
-  pull(insecticide)
-
-insecticides_plot_small <- c("Deltamethrin",
-                             "Permethrin",
-                             "Alpha-cypermethrin")
 
 ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
 
@@ -59,66 +53,6 @@ df <- ir_africa %>%
   # add an index to the vector of unique cells (now they have been subsetted)
   mutate(
     cell_id = match(cell, unique(cell))
-  )
-
-# subset df to the cell and year with the most bioassay results
-df_most_sampled <- df %>%
-  filter(
-    insecticide_type %in% insecticides_plot_small
-  ) %>%
-  mutate(
-    cell_year_type = sprintf("location %i\n(%i)\n%s",
-                             cell_id,
-                             year,
-                             insecticide_type)
-  ) %>%
-  group_by(
-    cell_year_type,
-    cell_id,
-    year,
-    insecticide_type
-  ) %>%
-  summarise(
-    count = n(),
-    .groups = "drop"
-  ) %>%
-  arrange(
-    desc(count)
-  ) %>%
-  slice(1:6) %>%
-  # bind_cols(
-  #   xyFromCell(mask, .$cell)
-  # ) %>%
-  # reverse_geocode(
-  #   lat = y,
-  #   long = x,
-  #   method = 'osm',
-  #   full_results = TRUE
-  # ) %>%
-  # mutate(
-  #   precise_place = str_split_i(address, ",", 1),
-  #   precise_place = case_when(
-  #     grepl("Placodji", address) ~ "Placodji, Cotonou",
-  #     grepl("Busia", address) ~ "Busia",
-  #     .default = precise_place
-  #   ),
-  #   place = paste(precise_place, country, sep = ", ")
-  # ) %>%
-  select(
-    cell_year_type,
-    cell_id,
-    year,
-    insecticide_type,
-    count,
-    # place
-  ) %>%
-  left_join(
-    mutate(df,
-           index = row_number()),
-    by = c("cell_id", "year", "insecticide_type")
-  ) %>%
-  mutate(
-    Susceptibility = died / mosquito_number
   )
 
 # Estimate the bioassay overdispersion rho, hierarchically by insecticide type
@@ -332,138 +266,9 @@ write.csv(rho_pair_check, "outputs/bioassay_rho_pair_check.csv",
 cat("\none bioassay's noise variance, replicate pairs over rho-hat:\n")
 print(as.data.frame(rho_pair_check), digits = 3)
 
-# the overall level, for the figure subtitle: the posterior mean of rho across
-# types, weighted by the assays each contributes
+# the overall level: the posterior mean of rho across types, weighted by the
+# assays each contributes
 rho_bayes <- weighted.mean(rho_hierarchical$rho, rho_hierarchical$n_assays)
-
-# compute expected and observed statistics of these to elucidate the distribution
-df_most_sampled_stats <- df_most_sampled %>%
-  group_by(cell_year_type, insecticide_type) %>%
-  summarise(
-    # point estimate of suitability
-    Susceptibility = sum(died) / sum(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    # 95% CIs under binomial (independence) sampling assumption
-    binom_lower_100 = qbinom(0.025, 100, Susceptibility) / 100,
-    binom_upper_100 = qbinom(0.975, 100, Susceptibility) / 100,
-    # 95% CIs under betabinomial (non-independence) sampling assumption, using
-    # the posterior mean estimated by our model
-    # MLE is lower, maybe biased down
-    # each example gets the rho of its own insecticide type, rather than one
-    # value shared across all of them
-    rho = rho_type_mean[insecticide_type],
-    alpha = Susceptibility * (1 / rho - 1),
-    beta = alpha * (1 - Susceptibility) / Susceptibility,
-    betabinom_lower_100 = qbbinom(0.025, 100, alpha, beta) / 100,
-    betabinom_upper_100 = qbbinom(0.975, 100, alpha, beta) / 100,
-  )
-
-colour_types <- scales::hue_pal(direction = -1)(9)
-types_plot_id <- match(insecticides_plot_small, insecticides_plot)
-colours_plot <- colour_types[types_plot_id]
-
-set.seed(1)
-df_most_sampled %>%
-  # shuffle the x axes so the points don't overlap too much
-  mutate(
-    x_random = sample(seq(0.2, 1.8, length.out = n()))
-  ) %>%
-  ggplot(
-    aes(
-      xmin = 0,
-      xmax = 2,
-      group = cell_year_type
-    )
-  ) +
-  geom_rect(
-    aes(
-      ymax = betabinom_upper_100,
-      ymin = betabinom_lower_100,
-    ),
-    data = df_most_sampled_stats,
-    fill = grey(0.9)
-  ) +
-  geom_rect(
-    aes(
-      ymax = binom_upper_100,
-      ymin = binom_lower_100,
-    ),
-    data = df_most_sampled_stats,
-    fill = grey(0.7)
-  ) +
-  geom_rect(
-    aes(
-      ymax = Susceptibility,
-      ymin = Susceptibility
-    ),
-    data = df_most_sampled_stats,
-    linewidth = 1,
-    colour = grey(0.4)
-  ) +
-  geom_point(
-    aes(
-      y = Susceptibility,
-      size = mosquito_number,
-      x = x_random,
-      fill = insecticide_type
-    ),
-    shape = 21
-  ) +
-  facet_wrap(~cell_year_type,
-             nrow = 1,
-             strip.position = "bottom") +
-  scale_y_continuous(
-    labels = scales::percent,
-    limits = c(0, 1)
-  ) +
-  scale_x_continuous(
-    limits = c(0, 2)
-  ) +
-  scale_fill_manual(
-    values = colours_plot
-  ) +
-  xlab("") +
-  theme_minimal() +
-  guides(
-    fill = "none",
-    size = guide_legend(title = "No. tested")
-  ) +
-  theme(
-    axis.text.x = element_blank(),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor.x = element_blank()
-  ) +
-  ggtitle(
-    "Significant variability in replicated bioassay results",
-    sprintf("95%s sampling intervals under binomial (mid grey) and betabinomial
-(light grey) sampling, at N=100. Correlation rho is estimated hierarchically by
-insecticide type (%s here; %s to %s across all nine types).",
-            "%",
-            paste(sprintf("%s %.2f", insecticides_plot_small,
-                          rho_type_mean[insecticides_plot_small]),
-                  collapse = ", "),
-            round(min(rho_hierarchical$rho), 2),
-            round(max(rho_hierarchical$rho), 2))
-  )
-
-ggsave(
-  "figures/bioassay_variability.png",
-  bg = "white",
-  scale = 0.9,
-  width = 8,
-  height = 6
-)
-
-# Multiple discriminating concentration bioassay results against Pyrethroids at
-# a single locations (5km grid cells) and years, as an example of the inherent
-# variability in this type of data. Dark grey horizontal lines give the (sample
-# size weighted) mean of the susceptibility estimates, medium grey bands give
-# the 95% sampling interval of a binomial distribution, with this mean and 100
-# samples, light grey bands give the 95% sampling interval of a beta-binomial
-# distribution, with this mean, 100 samples, and correlation parameter estimate
-# from each dataset independently.
 
 # Using this estimate of the dispersion in susceptibility bioassays (and
 # assuming each was sampled from a single location), plot how the statistical

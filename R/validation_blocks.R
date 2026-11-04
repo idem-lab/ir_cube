@@ -462,7 +462,7 @@ if (identical(environment(), globalenv())) {
                  aes(x = longitude, y = latitude, colour = fold,
                      size = records),
                  alpha = 0.85) +
-      scale_colour_manual(values = block_colours, name = "held out in fold",
+      scale_colour_manual(values = block_colours, name = "Held out in fold",
                           drop = FALSE) +
       scale_size_area(max_size = 3.2, guide = "none") +
       coord_sf(expand = TRUE) +
@@ -478,7 +478,7 @@ if (identical(environment(), globalenv())) {
     patchwork::plot_annotation(
       title = sprintf(paste("Spatial block folds: each country cut into %i",
                             "contiguous regions of equal area"), n_blocks),
-      subtitle = paste("point size is the number of bioassays at that pixel;",
+      subtitle = paste("Point size is the number of bioassays at that pixel;",
                        "every pixel is held out in exactly one fold")
     ) &
     theme(legend.position = "bottom")
@@ -503,13 +503,13 @@ if (identical(environment(), globalenv())) {
     geom_point(data = map_data,
                aes(x = longitude, y = latitude, colour = fold, size = records),
                alpha = 0.8) +
-    scale_colour_manual(values = block_colours, name = "held out in fold") +
-    scale_size_area(max_size = 3, name = "bioassays") +
+    scale_colour_manual(values = block_colours, name = "Held out in fold") +
+    scale_size_area(max_size = 3, name = "Bioassays") +
     coord_sf(expand = FALSE) +
     labs(x = NULL, y = NULL,
          title = sprintf("Spatial block folds in the %s validation countries",
                          number_word(n_distinct(map_data$country_name))),
-         subtitle = sprintf(paste("crosses are bioassays in the other %i",
+         subtitle = sprintf(paste("Crosses are bioassays in the other %i",
                                   "countries, which stay in training",
                                   "throughout"),
                             n_distinct(df$country_name) -

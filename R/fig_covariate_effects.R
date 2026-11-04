@@ -274,8 +274,7 @@ regression_grid <- stats %>%
       vjust = 0)
   )
 
-# one figure: the effect sizes (A), and the selection pressures overall, for
-# the combined covariates and for each one (B)
+# plot the combined and specific selection pressures
 
 # suppress some plot elements in each
 max_pressure <- max(c(overall_stats$mean_scaled,
@@ -284,7 +283,7 @@ max_pressure <- max(c(overall_stats$mean_scaled,
 fill_scale <- scale_fill_gradient(low = "white",
                                   high = "red",
                                   limits = c(0, max_pressure)) 
-pressure_panels <- (overall_stats_effect_grid +
+(overall_stats_effect_grid +
     fill_scale +
     theme(legend.position = "none",
           plot.title.position = "plot")) +
@@ -297,11 +296,7 @@ pressure_panels <- (overall_stats_effect_grid +
      fill_scale +
      theme(axis.text.x = element_blank(),
            plot.title.position = "plot")) +
-  plot_layout(nrow = 3, heights = c(1, 3, 9))
-
-wrap_elements(full = regression_grid) +
-  wrap_elements(full = pressure_panels) +
-  plot_layout(ncol = 2) +
+  plot_layout(nrow = 3, heights = c(1, 3, 9)) +
   plot_annotation(tag_levels = 'A') &
   theme(plot.tag = element_text(size = 12))
 
@@ -309,6 +304,17 @@ ggsave(
   "figures/covariate_loadings.png",
   bg = "white",
   scale = 0.8,
-  width = 16,
+  width = 8,
   height = 8
-)
+)  
+
+
+regression_grid
+
+ggsave(
+  "figures/covariate_loadings_effect_size.png",
+  bg = "white",
+  scale = 0.8,
+  width = 8,
+  height = 6
+)  

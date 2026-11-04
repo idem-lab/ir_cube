@@ -397,7 +397,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
     limits = size_limits
   ) +
   xlab("") +
-  ylab("Susceptibility") +
+  ylab("Mortality") +
   coord_cartesian(xlim = c(1995, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +

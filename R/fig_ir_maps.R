@@ -68,7 +68,7 @@ for (this_insecticide in insecticides_plot) {
       country_borders +
       scale_fill_gradient(
         labels = scales::percent,
-        name = "Susceptibility",
+        name = "Mortality",
         limits = c(0, 1),
         breaks = c(0, 0.5, 1),
         high = insecticides_col[this_index],

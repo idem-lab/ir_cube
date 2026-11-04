@@ -398,7 +398,7 @@ net_class_fig <- pyrethroid_net_class_points %>%
   ) +
   scale_size_area() +
   xlab("") +
-  ylab("Susceptibility to pyrethroids") +
+  ylab("Mortality in pyrethroid bioassays") +
   coord_cartesian(xlim = c(2000, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +

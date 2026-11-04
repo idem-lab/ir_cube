@@ -302,34 +302,34 @@ p_nets <- row_plot(
                      breaks = c(0, 0.5, 1)),
   strip = TRUE)
 p_m <- row_plot(
-  realisations(m, which_draws), "dynamical\nlogit m",
+  realisations(m, which_draws), "Dynamical\nlogit m",
   list(geom_line(aes(y = value), data = m_mean, colour = "black",
                  linewidth = 0.6),
        geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour))
 p_eta <- row_plot(
-  realisations(eta, which_draws), "annual\nanomaly η",
+  realisations(eta, which_draws), "Annual\nanomaly η",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.3,
                  alpha = 0.6),
        geom_point(aes(y = value, colour = realisation), size = 0.6),
        realisation_colour))
 p_xi <- row_plot(
-  realisations(xi, which_draws), "cumulative\nξ = Ση",
+  realisations(xi, which_draws), "Cumulative\nξ = Ση",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
 p_omega <- row_plot(
-  realisations(omega, which_draws), "static\nfield ω",
+  realisations(omega, which_draws), "Static\nfield ω",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
 p_lambda <- row_plot(
-  realisations(lambda, which_draws), "logit\nm+ω+ξ",
+  realisations(lambda, which_draws), "Logit\nm+ω+ξ",
   list(geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour))
 p_mort <- row_plot(
-  realisations(plogis(lambda), which_draws), "mortality",
+  realisations(plogis(lambda), which_draws), "Mortality",
   list(geom_point(aes(y = mortality, size = mosquito_number),
                   data = bioassays, shape = 21, fill = grey(0.8),
                   colour = grey(0.35), stroke = 0.2, alpha = 0.7),
@@ -367,12 +367,12 @@ summarise_draws <- function(values, model) {
            model = model)
 }
 intervals <- bind_rows(
-  summarise_draws(plogis(m), "dynamical model"),
-  summarise_draws(plogis(lambda), "two-stage model")
+  summarise_draws(plogis(m), "Dynamical model"),
+  summarise_draws(plogis(lambda), "Two-stage model")
 ) %>%
-  mutate(model = factor(model, c("dynamical model", "two-stage model")))
-model_cols <- c(`dynamical model` = grey(0.45),
-                `two-stage model` = pyrethroid_blue)
+  mutate(model = factor(model, c("Dynamical model", "Two-stage model")))
+model_cols <- c(`Dynamical model` = grey(0.45),
+                `Two-stage model` = pyrethroid_blue)
 
 p_int <- ggplot(intervals, aes(x = year)) +
   projection_shading +
@@ -388,7 +388,7 @@ p_int <- ggplot(intervals, aes(x = year)) +
   scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   x_scale +
   xlab(NULL) +
-  ylab("Susceptibility to deltamethrin") +
+  ylab("Mortality in deltamethrin bioassays") +
   base_theme +
   theme(legend.position = "top",
         legend.justification = "left",

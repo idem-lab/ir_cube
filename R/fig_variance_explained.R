@@ -209,7 +209,7 @@ pooled_floors <- sapply(list(pooled_level, pooled_change), function(data) {
   axis_floor(data$lower)
 })
 pooled_figure <- pooled_row(pooled_level, level_title) /
-  pooled_row(pooled_change, "skill against no change (%)") +
+  pooled_row(pooled_change, "Skill against no change (%)") +
   plot_layout(heights = 100 - pooled_floors)
 
 ggsave("figures/CV_in_sample_pooled.png", pooled_figure, width = 7.5,

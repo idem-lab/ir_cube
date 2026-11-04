@@ -640,7 +640,7 @@ for (type in insecticides_plot) {
     diverging_scale("Correction<br>(logit)", correction_limit),
     title = sprintf("%s: second-stage correction", type),
     subtitle = paste("Posterior mean of omega + xi on the logit scale",
-                     "(+ = more susceptible than the dynamical model);",
+                     "(+ = higher mortality than the dynamical model);",
                      model_note(type)),
     file = file.path(figure_dir, sprintf("%s_correction_map.png", type)))
 
@@ -648,7 +648,7 @@ for (type in insecticides_plot) {
     read_map(type, "difference_pp"),
     diverging_scale("Difference<br>(% points)", difference_limit),
     title = sprintf("%s: two-stage minus dynamical", type),
-    subtitle = paste("Difference in posterior mean susceptibility",
+    subtitle = paste("Difference in posterior mean mortality",
                      "(including the shrinkage towards 50% from the",
                      "correction's variance), percentage points;",
                      model_note(type)),

@@ -30,27 +30,27 @@ by_fold <- read.csv("outputs/cv_by_fold.csv", encoding = "UTF-8")
 
 # The nearest neighbour null is the practice baseline a person would actually
 # apply: one neighbour, the most recent two available years.
-model_labels <- c(dynamical = "dynamical model",
-                  two_stage = "two-stage model",
-                  nearest_neighbour = "nearest neighbour",
-                  intercept = "insecticide mean")
-model_colours <- c("dynamical model" = "#2166AC",
-                   "two-stage model" = "#C51B7D",
-                   "nearest neighbour" = "#B2182B",
-                   "insecticide mean" = grey(0.55))
+model_labels <- c(dynamical = "Dynamical model",
+                  two_stage = "Two-stage model",
+                  nearest_neighbour = "Nearest neighbour",
+                  intercept = "Insecticide mean")
+model_colours <- c("Dynamical model" = "#2166AC",
+                   "Two-stage model" = "#C51B7D",
+                   "Nearest neighbour" = "#B2182B",
+                   "Insecticide mean" = grey(0.55))
 
 # The forecasting experiment is one per origin, since pooling a 2014 forecast
 # with a 2018 one would average over holdout windows whose true rates of decline
 # differ by a factor of two. Origins are labelled by their cut year and ordered
 # after the spatial experiments, earliest first.
-experiment_labels <- c(spatial_interpolation = "spatial interpolation",
-                       spatial_blocks = "spatial extrapolation")
+experiment_labels <- c(spatial_interpolation = "Spatial interpolation",
+                       spatial_blocks = "Spatial extrapolation")
 
 label_experiments <- function(experiment) {
   cut_year <- sub("^temporal_forecasting_", "", experiment)
   is_forecast <- cut_year != experiment
   out <- ifelse(is_forecast,
-                paste("forecast from", cut_year),
+                paste("Forecast from", cut_year),
                 experiment_labels[experiment])
   forecast_levels <- unique(out[is_forecast])
   forecast_levels <- forecast_levels[order(forecast_levels)]
@@ -71,15 +71,15 @@ tidy_labels <- function(data) {
 # The models the figure shows: the insecticide mean is left to the table. The
 # two-stage model is drawn last and widest, so it is the one read first; the
 # legend lists it first
-figure_models <- c("two-stage model", "dynamical model", "nearest neighbour")
+figure_models <- c("Two-stage model", "Dynamical model", "Nearest neighbour")
 figure_data <- function(data) {
   data %>%
     tidy_labels() %>%
     filter(model %in% figure_models) %>%
     mutate(model = factor(model, levels = rev(figure_models)))
 }
-model_widths <- c("two-stage model" = 1.2, "dynamical model" = 0.6,
-                  "nearest neighbour" = 0.6)
+model_widths <- c("Two-stage model" = 1.2, "Dynamical model" = 0.6,
+                  "Nearest neighbour" = 0.6)
 
 # in-sample coverage (R/in_sample_calibration.R), at the modelled bioassays
 # of the full fit, beside each held-out curve
@@ -87,10 +87,10 @@ in_sample <- read.csv("outputs/in_sample_coverage.csv") %>%
   select(-experiment) %>%
   mutate(model = factor(model_labels[model], levels = rev(figure_models)))
 coverage_lines <- bind_rows(
-  figure_data(coverage) %>% mutate(bioassays = "held out"),
+  figure_data(coverage) %>% mutate(bioassays = "Held out"),
   tidyr::crossing(experiment = unique(figure_data(coverage)$experiment),
                   in_sample) %>%
-    mutate(bioassays = "in sample (full fit)")
+    mutate(bioassays = "In sample (full fit)")
 )
 
 coverage_plot <- coverage_lines %>%
@@ -108,15 +108,15 @@ coverage_plot <- coverage_lines %>%
                       name = "") +
   scale_linewidth_manual(values = model_widths, breaks = figure_models,
                          name = "") +
-  scale_linetype_manual(values = c("held out" = 1,
-                                   "in sample (full fit)" = 3),
+  scale_linetype_manual(values = c("Held out" = 1,
+                                   "In sample (full fit)" = 3),
                         name = "") +
   scale_x_continuous(labels = scales::percent) +
   scale_y_continuous(labels = scales::percent) +
   coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
   labs(
-    x = "nominal coverage of the central predictive interval",
-    y = "observed coverage",
+    x = "Nominal coverage of the central predictive interval",
+    y = "Observed coverage",
     subtitle = "Coverage of central predictive intervals"
   ) +
   theme_minimal() +
@@ -152,8 +152,8 @@ reliability_plot <- reliability %>%
   coord_equal() +
   guides(colour = "none", linewidth = "none") +
   labs(
-    x = "predicted mortality (map), mean in each tenth of predictions",
-    y = "observed mortality, mean",
+    x = "Predicted mortality (map), mean in each tenth of predictions",
+    y = "Observed mortality, mean",
     subtitle = "Observed against predicted mortality of held-out bioassays"
   ) +
   theme_minimal() +
@@ -216,7 +216,7 @@ rho_plot <- rho_comparison %>%
         shape = insecticide_class)
   ) +
   geom_abline(intercept = 0, slope = 1, linetype = 2, colour = grey(0.6)) +
-  geom_point(size = 3, colour = model_colours[["dynamical model"]]) +
+  geom_point(size = 3, colour = model_colours[["Dynamical model"]]) +
   facet_wrap(~ experiment, nrow = 1) +
   scale_shape_discrete(name = "") +
   coord_equal() +

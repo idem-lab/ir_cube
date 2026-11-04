@@ -95,7 +95,7 @@ pyrethroid_fig <- ggplot() +
     high = "#56B1F7",
     low = "white",
     na.value = "transparent",
-    name = "Susceptibility",
+    name = "Mortality",
     guide = guide_colorbar(frame.colour = border_col,
                            frame.linewidth = 0.1)
   ) +

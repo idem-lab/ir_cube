@@ -86,7 +86,7 @@ ir_change_fig <- ggplot() +
     midpoint = 0,
     na.value = "transparent"
   ) +
-  labs(fill = "Change in susceptibility") +
+  labs(fill = "Change in mortality") +
   theme_ir_maps() +
   theme(
     plot.margin = unit(rep(0, 4), "cm"),

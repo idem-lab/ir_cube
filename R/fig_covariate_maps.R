@@ -21,31 +21,39 @@ country_borders <- geom_sf(data = borders,
                            linewidth = 0.1,
                            fill = "transparent")
 
-# plot time-varying covariates
-itn <- rast("data/clean/net_use_cube.tif")
-itn_plot_years <- c(2000, 2005, 2010, 2015, 2020)
-itn_plot_layers <- paste0("nets_", itn_plot_years)
-itn_plot <- itn[[itn_plot_layers]]
-names(itn_plot) <- itn_plot_years
+# plot time-varying covariates: the layers the model uses
+# (R/model_covariates.R), at four years from the baseline to the present
+plot_years <- c(1995, 2005, 2015, 2025)
+source("R/model_covariates.R")
 
-irs <- rast("data/clean/irs_coverage_cube.tif")
-irs_plot_years <- c(2000, 2005, 2010, 2015, 2020)
-irs_plot_layers <- paste0("irs_", irs_plot_years)
-irs_plot <- irs[[irs_plot_layers]]
-names(irs_plot) <- irs_plot_years
+# a cube's layers at plot_years, padded as the model pads them
+# (read_padded_cube()): years before the cube's first are its first layer,
+# years after its last are its last; the facet label says which years are
+# copies
+model_years <- function(cube, years_plot = plot_years) {
+  years <- as.numeric(str_sub(names(cube), start = -4L))
+  used <- pmin(pmax(years_plot, min(years)), max(years))
+  out <- cube[[match(used, years)]]
+  names(out) <- ifelse(used == years_plot, years_plot,
+                       sprintf("%i\n(assumed same as %i)", years_plot, used))
+  out
+}
 
-pop <- rast("data/clean/pop_cube.tif")
-pop_plot_years <- c(2000, 2005, 2010, 2015, 2020)
-pop_plot_layers <- paste0("pop_", pop_plot_years)
-pop_plot <- pop[[pop_plot_layers]]
-names(pop_plot) <- pop_plot_years
+# pyrethroid net use, a conventional ITN counting as 0.25 of an LLIN
+# (net_use_file(), R/prep_net_use_pyrethroid.R)
+itn_plot <- model_years(rast(net_use_file(selection_design())))
 
-# get population density
-pop_dens_plot <- pop_plot / terra::cellSize(pop_plot[[1]], unit = "km")
+# IRS coverage, scaled to its maximum (which is 1, so this is the coverage)
+irs_plot <- model_years(rast("data/clean/irs_coverage_scaled_cube.tif"))
+
+# population density, people per km2, with WorldPop's empty pixels at 0
+# (pop_zero_filled())
+pop <- pop_zero_filled(rast("data/clean/pop_cube.tif"))
+pop_dens_plot <- model_years(pop) /
+  terra::cellSize(rast("data/clean/raster_mask.tif"), unit = "km")
 
 # plot ITN
 itn_plot_mask <- terra::mask(itn_plot, pf_water_mask)
-max_nets <- max(global(itn_plot_mask, "max", na.rm = TRUE))
 ggplot() +
   africa_bg +
   geom_spatraster(
@@ -53,7 +61,7 @@ ggplot() +
   ) +
   country_borders +
   scale_fill_gradient(
-    name = "LLIN use",
+    name = "Net use",
     labels = scales::percent,
     limits = c(0, 1),
     low = "pink",
@@ -61,14 +69,14 @@ ggplot() +
     na.value = "transparent") +
   facet_wrap(~lyr, nrow = 1) +
   ggtitle(
-    label = "LLIN use"
+    label = "Pyrethroid net use"
   ) +
   theme_ir_maps()
 
 ggsave("figures/itn_map.png",
        bg = "white",
-       width = 18,
-       height = 4,
+       width = 14,
+       height = 4.5,
        dpi = 300)
 
 # plot IRS
@@ -94,12 +102,20 @@ ggplot() +
 
 ggsave("figures/irs_map.png",
        bg = "white",
-       width = 18,
-       height = 4,
+       width = 14,
+       height = 4.5,
        dpi = 300)
 
 
-# plot pop
+# plot pop, coloured on the scale the model sees it: the chance of encounter,
+# 1 - exp(-d log(2) / d_half) at density d, with d_half
+# selection_design()'s pop_d_half (selection_pop_matrix())
+d_half <- selection_design()$pop_d_half
+encounter_transform <- scales::trans_new(
+  "encounter",
+  transform = function(d) -expm1(-d * log(2) / d_half),
+  inverse = function(s) -d_half * log1p(-s) / log(2)
+)
 pop_dens_plot_mask <- terra::mask(pop_dens_plot, pf_water_mask)
 ggplot() +
   africa_bg +
@@ -108,11 +124,11 @@ ggplot() +
   ) +
   country_borders +
   scale_fill_continuous(
-    trans = "log1p",
+    transform = encounter_transform,
     labels = scales::number_format(big.mark = ","),
     low = "lightblue",
     high = "navy",
-    breaks = c(1e1, 1e2, 1e3, 1e4),
+    breaks = c(10, 100, d_half, 1000),
     name = "People per km<sup>2</sup>",
     na.value = "transparent") +
   facet_wrap(~lyr, nrow = 1) +
@@ -123,8 +139,8 @@ ggplot() +
 
 ggsave("figures/pop_map.png",
        bg = "white",
-       width = 18,
-       height = 4,
+       width = 14,
+       height = 4.5,
        dpi = 300)
 
 
@@ -166,8 +182,8 @@ ggplot() +
   scale_fill_gradient(
     # labels = scales::percent,
     transform = "sqrt",
-    low = "lightgreen",
-    high = "darkgreen",
+    low = "#eef8e4",
+    high = "#003d16",
     name = "Relative production",
     limits = c(0, 1),
     na.value = "transparent") +
