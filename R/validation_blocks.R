@@ -12,7 +12,7 @@
 # country's records in training, so every country intercept stays identified and
 # the test isolates spatial prediction.
 #
-# Only the six countries already selected for the national folds are split.
+# Only the countries already selected for the national folds are split.
 # Those were chosen by a criterion that matters here too — more than ten
 # bioassays of every one of the nine insecticide types since 2010 — and keeping
 # to them buys three things. The block experiment becomes directly comparable
@@ -60,9 +60,9 @@ suppressMessages({
 if (!exists("n_blocks")) {
   n_blocks <- 2
 }
-# the countries to split: the same six the national folds hold out, chosen in
-# validation_folds.R as those with more than ten bioassays of every insecticide
-# type since 2010
+# the countries to split: the same countries the national folds held out
+# (five with the current data), chosen in validation_folds.R as those with
+# more than ten bioassays of every insecticide type since 2010
 countries_to_block <- countries_to_validate
 # a country still needs enough cells to make three regions that are meaningfully
 # regions, checked rather than assumed
@@ -476,8 +476,8 @@ if (identical(environment(), globalenv())) {
   country_map <- patchwork::wrap_plots(panels, nrow = 2) +
     patchwork::plot_layout(guides = "collect") +
     patchwork::plot_annotation(
-      title = sprintf("Spatial block folds: each country cut into %i regions of equal area",
-                      n_blocks),
+      title = sprintf(paste("Spatial block folds: each country cut into %i",
+                            "contiguous regions of equal area"), n_blocks),
       subtitle = paste("point size is the number of bioassays at that pixel;",
                        "every pixel is held out in exactly one fold")
     ) &
@@ -487,6 +487,10 @@ if (identical(environment(), globalenv())) {
          bg = "white", width = 11, height = 7.5)
 
   # and the continental view, showing what stays in training throughout
+  number_word <- function(n) {
+    if (n <= 10) c("one", "two", "three", "four", "five", "six", "seven",
+                   "eight", "nine", "ten")[n] else as.character(n)
+  }
   untested <- cells %>% filter(is.na(block_of_cell[as.character(cell)]))
 
   africa_map <- ggplot() +
@@ -503,9 +507,13 @@ if (identical(environment(), globalenv())) {
     scale_size_area(max_size = 3, name = "bioassays") +
     coord_sf(expand = FALSE) +
     labs(x = NULL, y = NULL,
-         title = "Spatial block folds in the six validation countries",
-         subtitle = paste("crosses are bioassays in the other 40 countries,",
-                          "which stay in training throughout")) +
+         title = sprintf("Spatial block folds in the %s validation countries",
+                         number_word(n_distinct(map_data$country_name))),
+         subtitle = sprintf(paste("crosses are bioassays in the other %i",
+                                  "countries, which stay in training",
+                                  "throughout"),
+                            n_distinct(df$country_name) -
+                              n_distinct(map_data$country_name))) +
     theme_minimal() +
     theme(legend.position = "right", panel.grid = element_blank())
 

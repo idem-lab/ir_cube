@@ -17,6 +17,9 @@
 # with t the year centred on 2009.5, in decades. The regional slope is
 # b + beta_r.
 #
+# Non-linearity is checked by a fit to the same data with a common quadratic
+# term, + q t_i^2, q ~ N(0, 1).
+#
 # Seven countries (Benin, DR Congo, Eswatini, Gabon, Liberia, Nigeria, Sierra
 # Leone) have estimated insecticide use that is their net-trade pesticides
 # total times one common insecticide share, so their E values carry no
@@ -101,9 +104,9 @@ trend_data <- insecticide %>%
 
 # model -----------------------------------------------------------------------
 
-# build the model for one data set; returns the greta model and the arrays to
-# summarise
-build_trend_model <- function(data) {
+# build the model for one data set, with the quadratic term if `quadratic`;
+# returns the greta model and the arrays to summarise
+build_trend_model <- function(data, quadratic = FALSE) {
   countries <- sort(unique(data$country_name))
   country_region <- data %>%
     distinct(country_name, region) %>%
@@ -142,22 +145,29 @@ build_trend_model <- function(data) {
 
   country_slope <- region_slope[region_of_country] + delta
   mu <- a[country_id] + country_slope[country_id] * data$t
+  arrays <- list(b = b, region_slope = region_slope, a = a,
+                 country_slope = country_slope, s_obs = s_obs,
+                 nu = nu, s_official = s_official, s_estimated = s_estimated,
+                 sigma_beta = sigma_beta, sigma_delta = sigma_delta)
+  if (quadratic) {
+    q <- normal(0, 1)
+    mu <- mu + q * data$t ^ 2
+    arrays$q <- q
+  }
+  arrays$mu <- mu
   distribution(data$y) <- student(nu, mu, s_obs)
 
   list(
     model = model(alpha, b, sigma_a, sigma_beta, sigma_delta,
                   s_official, s_estimated, nu),
-    arrays = list(b = b, region_slope = region_slope, a = a,
-                  country_slope = country_slope, mu = mu, s_obs = s_obs,
-                  nu = nu, s_official = s_official, s_estimated = s_estimated,
-                  sigma_beta = sigma_beta, sigma_delta = sigma_delta),
+    arrays = arrays,
     countries = countries,
     region_of_country = region_of_country
   )
 }
 
-fit_trend_model <- function(data) {
-  built <- build_trend_model(data)
+fit_trend_model <- function(data, quadratic = FALSE) {
+  built <- build_trend_model(data, quadratic)
   draws <- mcmc(built$model, n_samples = n_samples, warmup = warmup,
                 chains = n_chains, verbose = FALSE)
   rhat <- coda::gelman.diag(draws, multivariate = FALSE)$psrf[, 1]
@@ -177,6 +187,7 @@ fits <- list(
   no_common_share = filter(trend_data, !common_share)
 ) %>%
   map(fit_trend_model)
+quadratic <- fit_trend_model(trend_data, quadratic = TRUE)
 
 cat("zero values dropped:", n_zero, "\n")
 cat("common-share countries:", paste(common_share_countries, collapse = ", "),
@@ -235,9 +246,6 @@ summarise_slopes <- function(fit, name) {
 
 regional_trend <- imap(fits, summarise_slopes) %>% bind_rows()
 
-write_csv(filter(regional_trend, fit == "main") %>% select(-fit),
-          "data/clean/faostat_regional_trend.csv")
-
 options(width = 200)
 print(regional_trend %>%
         select(fit, region, n_obs, n_official, slope_per_year, slope_lower,
@@ -253,6 +261,21 @@ cat(sprintf("main: sigma_beta %.3f [%.3f, %.3f]; sigma_delta %.3f; s_official %.
             quantile(main$sims$sigma_beta, 0.975),
             mean(main$sims$sigma_delta), mean(main$sims$s_official),
             mean(main$sims$s_estimated), mean(main$sims$nu)))
+
+# non-linearity: the quadratic coefficient (log scale per decade^2), and the
+# departure from the linear trend it implies at the ends of the series
+# relative to the centre (t = +-1.45 decades), as a ratio of the intensity
+q_draws <- as.vector(quadratic$sims$q)
+t_end <- (last_year - centre_year) / 10
+cat(sprintf(paste("quadratic fit: max rhat %.3f, min ess %.0f; q %.3f [%.3f,",
+                  "%.3f] per decade^2, P(q > 0) %.2f; at the ends of the",
+                  "series the intensity is %.2f [%.2f, %.2f] times the",
+                  "linear trend's\n"),
+            quadratic$max_rhat, quadratic$min_ess, mean(q_draws),
+            quantile(q_draws, 0.025), quantile(q_draws, 0.975),
+            mean(q_draws > 0), exp(median(q_draws) * t_end ^ 2),
+            exp(quantile(q_draws, 0.025) * t_end ^ 2),
+            exp(quantile(q_draws, 0.975) * t_end ^ 2)))
 
 # posterior predictive checks --------------------------------------------------
 

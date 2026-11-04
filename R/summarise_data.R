@@ -1,7 +1,9 @@
-# summarise the bioassay data: numbers of records, mosquitoes tested, unique
-# locations, location-years and countries, and year range, for the full
-# collated dataset and for the modelled subset, overall, by insecticide class
-# and by insecticide type
+# summarise the bioassay data: numbers of records, mosquitoes tested (total and
+# median per bioassay), unique locations, location-years and countries, and
+# year range, for the full collated dataset and for the modelled subset,
+# overall, by insecticide class and by insecticide type; and the records each
+# processing step removes, in R/prep_bioassays.R (per source) and in
+# subset_modelled_bioassays()
 
 # load packages and functions
 source("R/packages.R")
@@ -23,6 +25,7 @@ summarise_bioassays <- function(data) {
     summarise(
       records = n(),
       mosquitoes = sum(mosquito_number),
+      median_tested = median(mosquito_number),
       locations = n_distinct(latitude, longitude),
       location_years = n_distinct(latitude, longitude, year),
       countries = n_distinct(country_name),
@@ -80,3 +83,30 @@ stopifnot(
 )
 
 print(data_summary, n = Inf, width = Inf)
+
+# records removed at each step of R/prep_bioassays.R, summed over sources
+attrition <- read_csv("outputs/review/bioassay_attrition.csv",
+                      show_col_types = FALSE, name_repair = "minimal")
+cat("\nrecords removed at each step of R/prep_bioassays.R, all sources:\n")
+print(enframe(colSums(select(attrition, -source)), name = "step",
+              value = "records"), n = Inf)
+
+# and at each step of subset_modelled_bioassays(), in its order; the last,
+# the cells outside the mask, is the difference from its result
+modelled_types <- filter(ir_africa, insecticide_type %in% modelled_insecticides)
+modal_concentration <- modelled_types %>%
+  group_by(insecticide_type) %>%
+  filter(concentration == sample_mode(concentration)) %>%
+  ungroup()
+from_baseline <- filter(modal_concentration, year >= 1995)
+subset_steps <- tibble(
+  step = c("collated", "not a modelled insecticide",
+           "not the insecticide's modal concentration", "before 1995",
+           "outside the mask"),
+  kept = c(nrow(ir_africa), nrow(modelled_types), nrow(modal_concentration),
+           nrow(from_baseline), nrow(df))
+) %>%
+  mutate(removed = lag(kept) - kept)
+stopifnot(all(subset_steps$removed >= 0, na.rm = TRUE))
+cat("\nrecords removed by subset_modelled_bioassays():\n")
+print(subset_steps)

@@ -515,8 +515,8 @@ diverging_scale <- function(name, limit) {
 }
 
 # panels in rows of four with the legend in the last slot, or in ncol columns
-# with the legend at the side
-year_panels <- function(raster, fill_scale, title, subtitle, file,
+# with the legend at the side; no subtitle if it is NULL
+year_panels <- function(raster, fill_scale, title, subtitle = NULL, file,
                         ncol = NULL) {
   years_list <- lapply(seq_len(nlyr(raster)), function(i) {
     ggplot() +
@@ -535,7 +535,9 @@ year_panels <- function(raster, fill_scale, title, subtitle, file,
     patchwork::plot_layout(guides = "collect", nrow = 2, ncol = ncol) +
     patchwork::plot_annotation(
       title = title,
-      subtitle = paste(strwrap(subtitle, width = 110), collapse = "\n"))
+      subtitle = if (!is.null(subtitle)) {
+        paste(strwrap(subtitle, width = 110), collapse = "\n")
+      })
   ggsave(file, bg = "white", width = if (is.null(ncol)) 13 else 11, height = 8,
          scale = 0.8, dpi = 300)
 }
@@ -561,7 +563,12 @@ model_note <- function(type) {
 }
 
 # the posterior uncertainty as an SD and as n*, under both readings of u and
-# p (local_terms). The posterior mean is mapped by R/fig_ir_maps.R
+# p (local_terms). The posterior mean is mapped by R/fig_ir_maps.R. The
+# paper's maps (SD, n*_pop) are titled with the insecticide alone, as
+# R/fig_ir_maps.R's
+type_title <- function(type) {
+  if (type == "llin_effective") "LLIN pyrethroids" else type
+}
 n_star_target <- c(
   pop = paste("ilogit(m + omega + xi), u and p taken as data error: the upper",
               "bound on the map's worth"),
@@ -590,9 +597,10 @@ for (type in c(insecticides_plot, "llin_effective")) {
                    na.value = "transparent",
                    guide = guide_coloursteps(frame.colour = border_col,
                                              frame.linewidth = 0.1)),
-      title = sprintf("%s: two-stage model, uncertainty as n*_%s",
-                      if (mix) "LLIN pyrethroids" else type, reading),
-      subtitle = paste0(
+      title = if (reading == "pop") type_title(type) else
+        sprintf("%s: two-stage model, uncertainty as n*_%s",
+                type_title(type), reading),
+      subtitle = if (reading == "local") paste0(
         "n*_", reading, ": the number of independent bioassays of 100 ",
         "mosquitoes at the pixel-year",
         if (mix) ", split across the pyrethroids by weight,",
@@ -610,7 +618,9 @@ for (type in c(insecticides_plot, "llin_effective")) {
   }
 }
 
-for (type in insecticides_plot) {
+# llin_effective's SD is the weighted sum of the pyrethroids' (`map
+# llin_effective`), the largest their marginal SDs allow
+for (type in c(insecticides_plot, "llin_effective")) {
   year_panels(
     read_map(type, "two_stage_sd_pp"),
     # a coloured sequential palette, so that no SD reads as the grey of the
@@ -619,11 +629,11 @@ for (type in insecticides_plot) {
                          option = "magma", direction = -1,
                          oob = scales::squish, na.value = "transparent",
                          guide = colourbar),
-    title = sprintf("%s: two-stage model, posterior SD", type),
-    subtitle = paste("Posterior SD of susceptibility, ilogit(m + omega + xi),",
-                     "in percentage points, including the dynamical model's",
-                     "uncertainty;", model_note(type)),
+    title = type_title(type),
     file = file.path(figure_dir, sprintf("%s_two_stage_sd_map.png", type)))
+}
+
+for (type in insecticides_plot) {
 
   year_panels(
     read_map(type, "correction_mean"),

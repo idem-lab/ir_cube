@@ -96,8 +96,7 @@ for (this_insecticide in insecticides_plot) {
       nrow = 2
     ) +
     patchwork::plot_annotation(
-      title = insecticide_name,
-      subtitle = "Susceptibility of An. gambiae (s.l./s.s.) in WHO bioassays"
+      title = insecticide_name
     )
   
   figure_name <- file.path(

@@ -128,10 +128,10 @@ ggsave("figures/pop_map.png",
        dpi = 300)
 
 
-# collated total yields of crop types
+# collated total production of crop types
 crops_group <- rast("data/clean/crop_group_scaled.tif")
 
-# yields of individual crops
+# production of individual crops
 crops_all <- rast("data/clean/crop_scaled.tif")
 
 # Pull out crop types implicated in risk for IR. refer to this review, crop type
@@ -168,7 +168,7 @@ ggplot() +
     transform = "sqrt",
     low = "lightgreen",
     high = "darkgreen",
-    name = "Relative yield",
+    name = "Relative production",
     limits = c(0, 1),
     na.value = "transparent") +
   facet_wrap(~lyr, nrow = 2) +
