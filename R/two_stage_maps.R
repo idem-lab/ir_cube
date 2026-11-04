@@ -667,6 +667,7 @@ ggsave(file.path(figure_dir,
 
 # fitted hyperparameters per type: the posterior mean and 95% interval
 # (fit_hyper_intervals())
+source("R/two_stage_correction.R")
 hyper_symbols <- c(range_omega = "omega~range~(km)", sigma_omega = "sigma[omega]",
                    range_eta = "eta~range~(km)", sigma_eta = "sigma[eta]",
                    phi = "phi", tau = "tau", sigma_p = "sigma[p]",
