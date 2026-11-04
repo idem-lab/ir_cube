@@ -49,8 +49,12 @@ pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 ir <- rast(ir_map_files("llin_effective", years_plot))
 names(ir) <- years_plot
 
-# - MAP net use (to manually project to 2030)
-nets <- rast("data/clean/net_use_cube.tif")
+# - net use as the model has it (net_use_file(), R/model_covariates.R): MITN
+# run 06 use of the nets that select for pyrethroid resistance, a conventional
+# ITN counting as 0.25 of an LLIN (R/prep_net_use_pyrethroid.R), carried
+# forward from its last year to 2030
+source("R/model_covariates.R")
+nets <- rast(net_use_file(selection_design()))
 names(nets) <- str_remove(names(nets), "^nets_")
 latest_nets <- max(as.numeric(names(nets)))
 end_year <- max(years_plot)
@@ -128,34 +132,15 @@ epi_function_mean <- function(susceptibility) {
 
 
 
-# generate a version of the epi function, drawn at random from the posteriors
-# given in Symons et al. Note we are assuming that they are independent, since
-# the posterior correlation is not given.
-make_stochastic_epi_function <- function() {
-  beta_0 <- rnorm(1, -1.68, 0.11)
-  beta_1 <- rnorm(1, 0.78, 0.12)
-  function(susceptibility) {
-    1 + (beta_1 * (1 - susceptibility)) / beta_0
-  }
-}
-
-
-# make a batch of them
-n_sims <- 100
-epi_functions_list <- replicate(n_sims,
-                                make_stochastic_epi_function(),
-                                simplify = FALSE)
-
-
-# # check this is defined correctly:
-# susc <- seq(0, 1, length.out = 100)
-# plot(epi_function(susc) ~ susc,
-#      ylim = c(0, 1),
-#      type = "l")
-# for (i in seq_len(n_sims)) {
-#   lines(epi_functions_list[[i]](susc) ~ susc,
-#         lwd = 0.1)
-# }
+# draws of the coefficients from the posteriors given in Symons et al., taken
+# as independent, since the posterior correlation is not given. The relative
+# effectiveness is linear in susceptibility k, g*(k) = 1 + r (1 - k), with
+# r = beta_1 / beta_0, so each draw needs only its r
+n_sims <- 1000
+set.seed(2026)
+beta_0_sims <- rnorm(n_sims, -1.68, 0.11)
+beta_1_sims <- rnorm(n_sims, 0.78, 0.12)
+ratio_sims <- beta_1_sims / beta_0_sims
 
 # perform calculations:
 
@@ -291,63 +276,33 @@ average_epi_impact_mean_lowest <- global(
 # abline(v = latest_nets)
 
 # Now do the same under a Monte Carlo simulation, to get credible intervals on
-# these
-n_years <- length(years_plot)
-individual_net_impact_sims <- 
-  individual_net_impact_sims_highest <- 
-  individual_net_impact_sims_medium <- 
-  individual_net_impact_sims_lowest <- 
-  net_distribution_impact_sims <- matrix(NA, nrow = n_years, ncol = n_sims)
-rownames(individual_net_impact_sims) <-
-  rownames(individual_net_impact_sims_highest) <-
-  rownames(individual_net_impact_sims_medium) <-
-  rownames(individual_net_impact_sims_lowest) <- 
-  rownames(net_distribution_impact_sims) <- years_plot
-
-for (i in seq_len(n_sims)) {
-  print(i)
-  
-  relative_epi_impact_sim <- terra::app(ir, epi_functions_list[[i]])
-  names(relative_epi_impact_sim) <- names(ir)
-  
-  average_epi_impact_sim <- global(
-    x = relative_epi_impact_sim * net_weights,
-    fun = "sum",
-    na.rm = TRUE
-  )
-  
-  individual_net_impact_sims[, i] <- average_epi_impact_sim$sum
-  
-  # same for low, medium, high
-  average_epi_impact_sim_highest <- global(
-    x = relative_epi_impact_sim * net_weights_highest,
-    fun = "sum",
-    na.rm = TRUE
-  )
-  average_epi_impact_sim_medium <- global(
-    x = relative_epi_impact_sim * net_weights_medium,
-    fun = "sum",
-    na.rm = TRUE
-  )
-  average_epi_impact_sim_lowest <- global(
-    x = relative_epi_impact_sim * net_weights_lowest,
-    fun = "sum",
-    na.rm = TRUE
-  )
-  individual_net_impact_sims_highest[, i] <- average_epi_impact_sim_highest$sum
-  individual_net_impact_sims_medium[, i] <- average_epi_impact_sim_medium$sum
-  individual_net_impact_sims_lowest[, i] <- average_epi_impact_sim_lowest$sum
-  
-  # now (for all bands) do the impact of net distribution
-  net_impact_epi_impact_sim <- global(
-    x = nets * relative_epi_impact_sim * infection_weights,
-    fun = "sum",
-    na.rm = TRUE
-  )
-  
-  net_distribution_impact_sims[, i] <- net_impact_epi_impact_sim$sum
-  
+# these. As g*(k) is linear in k, a weighted sum of it over pixels is
+# S_w + r (S_w - S_wk), with S_w the sum of the weights and S_wk the sum of
+# the weights times k, over the pixels with a susceptibility. So the sums are
+# computed once per year, and each draw is arithmetic on them: years x draws
+weighted_sums <- function(weights) {
+  weights <- terra::mask(weights, ir)
+  list(w = global(weights, "sum", na.rm = TRUE)$sum,
+       wk = global(weights * ir, "sum", na.rm = TRUE)$sum)
 }
+simulate_impact <- function(weights) {
+  sums <- weighted_sums(weights)
+  impact <- sums$w + outer(sums$w - sums$wk, ratio_sims)
+  rownames(impact) <- years_plot
+  impact
+}
+individual_net_impact_sims <- simulate_impact(net_weights)
+individual_net_impact_sims_highest <- simulate_impact(net_weights_highest)
+individual_net_impact_sims_medium <- simulate_impact(net_weights_medium)
+individual_net_impact_sims_lowest <- simulate_impact(net_weights_lowest)
+net_distribution_impact_sims <- simulate_impact(nets * infection_weights)
+
+# check: at the posterior mean coefficients (r = -0.46), the sums give what
+# the map does
+mean_check <- weighted_sums(net_weights)
+stopifnot(isTRUE(all.equal(
+  mean_check$w - 0.46 * (mean_check$w - mean_check$wk),
+  average_epi_impact_mean$sum, tolerance = 1e-6)))
 
 
 # compute credible intervals of each of these over time
