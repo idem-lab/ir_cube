@@ -29,6 +29,16 @@
 #   regional variation  + region x t against + region (regional intercepts in
 #                       both, so only the slopes are tested).
 #
+# For the supplement: "In the country-reported FAOSTAT data, allowing for
+# serial correlation within countries, neither a quadratic term (p = 0.33) nor
+# region-specific slopes (p = 0.31) improved the fit, so we assume a common
+# linear trend." The log prints what reporting the tests needs: per data set,
+# the numbers of values and countries, the linear model's estimates with 95%
+# intervals (fixed effects, random-effect SDs, AR(1) correlation, residual
+# SDs), the quadratic coefficient with its 95% interval, each test's log
+# likelihoods, numbers of parameters, AIC, likelihood ratio statistic, degrees
+# of freedom and p value, and the regional slopes with 95% intervals.
+#
 #   Rscript R/faostat_trend_model.R
 # Needs data/clean/faostat_pesticide_use.RDS from R/prep_faostat.R.
 
@@ -112,34 +122,63 @@ residual_lag1 <- function(fit, data) {
     pull(lag1)
 }
 
+# the regional slopes (per year, on the log scale) of a fit with region x t,
+# with 95% intervals
+regional_slopes <- function(model) {
+  contrast <- t(sapply(regions, function(r) {
+    as.numeric(names(fixef(model)) %in% c("t", paste0("t:region", r)))
+  }))
+  estimate <- (contrast %*% fixef(model))[, 1]
+  se <- sqrt(rowSums((contrast %*% vcov(model)) * contrast))
+  tibble(region = regions, slope = estimate / 10,
+         lower = (estimate - qnorm(0.975) * se) / 10,
+         upper = (estimate + qnorm(0.975) * se) / 10)
+}
+
+# a likelihood ratio test of nested ML fits, as one row
+lr_test <- function(simple, complex) {
+  ll <- c(logLik(simple), logLik(complex))
+  k <- c(attr(logLik(simple), "df"), attr(logLik(complex), "df"))
+  stat <- 2 * (ll[2] - ll[1])
+  tibble(loglik_simple = ll[1], loglik_complex = ll[2],
+         parameters_simple = k[1], parameters_complex = k[2],
+         aic_simple = AIC(simple), aic_complex = AIC(complex),
+         lr_statistic = stat, df = k[2] - k[1],
+         p = pchisq(stat, k[2] - k[1], lower.tail = FALSE))
+}
+
 options(width = 200)
 cat("zero values dropped:", n_zero, "\n")
 for (name in names(fits)) {
   data <- datasets[[name]]
   fit <- fits[[name]]
   slope <- summary(fit$linear)$tTable["t", ]
-  quadratic <- summary(fit$quadratic)$tTable["I(t^2)", ]
-  phi <- coef(fit$linear$modelStruct$corStruct, unconstrained = FALSE)
-  cat(sprintf(paste("\n%s: %i values (%i reported), %i countries;",
-                    "AR(1) correlation between consecutive years %.2f;",
-                    "lag-1 autocorrelation of the normalised residuals %.2f\n"),
+  cat(sprintf(paste("\n==== %s: %i values (%i reported by countries),",
+                    "%i countries\n"),
               name, nrow(data), sum(data$official),
-              n_distinct(data$country_name), phi,
-              residual_lag1(fit$linear, data)))
-  cat(sprintf(paste("linear trend %.3f (95%% CI %.3f to %.3f) per year on",
-                    "the log scale: 2025 use %.2f times 1995's\n"),
+              n_distinct(data$country_name)))
+  cat("countries and values per region:\n")
+  print(data %>% group_by(region) %>%
+          summarise(countries = n_distinct(country_name), values = n()))
+  cat("\nlinear model (t in decades from 2009.5; y the log of kg per ha):",
+      "estimates with 95% intervals\n")
+  print(intervals(fit$linear, which = "all"))
+  cat(sprintf(paste("trend %.3f (95%% interval %.3f to %.3f) per year on the",
+                    "log scale, so 2025 use is %.2f times 1995's;",
+                    "lag-1 autocorrelation of the normalised residuals %.2f\n"),
               slope[["Value"]] / 10,
-              (slope[["Value"]] - 1.96 * slope[["Std.Error"]]) / 10,
-              (slope[["Value"]] + 1.96 * slope[["Std.Error"]]) / 10,
-              exp(slope[["Value"]] * (2025 - 1995) / 10)))
-  cat(sprintf("quadratic term %.3f (SE %.3f) per decade^2\n",
-              quadratic[["Value"]], quadratic[["Std.Error"]]))
-  cat("non-linearity: quadratic against linear\n")
-  print(anova(fit$linear, fit$quadratic))
-  cat("regional variation: regional slopes against regional intercepts\n")
-  print(anova(fit$regional_level, fit$regional_slope))
-  cat("countries per region:\n")
-  print(count(distinct(data, region, country_name), region))
+              (slope[["Value"]] - qnorm(0.975) * slope[["Std.Error"]]) / 10,
+              (slope[["Value"]] + qnorm(0.975) * slope[["Std.Error"]]) / 10,
+              exp(slope[["Value"]] * (2025 - 1995) / 10),
+              residual_lag1(fit$linear, data)))
+  cat("\nnon-linearity: the quadratic coefficient (per decade^2), 95% interval\n")
+  print(intervals(fit$quadratic, which = "fixed")$fixed["I(t^2)", ])
+  cat("quadratic against linear:\n")
+  print(as.data.frame(lr_test(fit$linear, fit$quadratic)))
+  cat("\nregional variation: regional slopes against regional intercepts:\n")
+  print(as.data.frame(lr_test(fit$regional_level, fit$regional_slope)))
+  cat("regional slopes (per year, log scale), 95% intervals:\n")
+  print(regional_slopes(fit$regional_slope))
 }
 
 # figures ---------------------------------------------------------------------
@@ -202,17 +241,8 @@ ggsave("figures/faostat_trend_regional_fits.png", trend_plot,
 # for the reported values and for all values; the dashed line is the common
 # trend of the linear model.
 region_slopes <- imap(fits, function(fit, name) {
-  model <- fit$regional_slope
-  contrast <- t(sapply(regions, function(r) {
-    as.numeric(names(fixef(model)) %in%
-                 c("t", paste0("t:region", r)))
-  }))
-  estimate <- contrast %*% fixef(model)
-  se <- sqrt(rowSums((contrast %*% vcov(model)) * contrast))
-  tibble(data = name, region = regions, slope = estimate[, 1] / 10,
-         lower = (estimate[, 1] - 1.96 * se) / 10,
-         upper = (estimate[, 1] + 1.96 * se) / 10,
-         common = fixef(fit$linear)[["t"]] / 10)
+  regional_slopes(fit$regional_slope) %>%
+    mutate(data = name, common = fixef(fit$linear)[["t"]] / 10)
 }) %>%
   bind_rows() %>%
   mutate(data = factor(c(reported = "Reported values",
