@@ -136,11 +136,15 @@ level <- bind_rows(
 
 # distances to the training data ----------------------------------------------------
 
-# the medians over held-out assays of the distance and years to the bioassay
-# the nearest bar used
+# the medians, and 5% and 95% quantiles, over held-out assays of the distance
+# and years to the bioassay the nearest bar used
 nearest_medians <- function(data) {
   tibble(median_km = median(data$nearest_km),
-         median_years = median(data$nearest_years))
+         km_05 = quantile(data$nearest_km, 0.05, names = FALSE),
+         km_95 = quantile(data$nearest_km, 0.95, names = FALSE),
+         median_years = median(data$nearest_years),
+         years_05 = quantile(data$nearest_years, 0.05, names = FALSE),
+         years_95 = quantile(data$nearest_years, 0.95, names = FALSE))
 }
 distances <- bind_rows(
   B = nearest_medians(interpolation),

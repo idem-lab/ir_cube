@@ -341,6 +341,10 @@ pop_mort_sry_net_class <- bind_rows(
   })
 )
 
+# the two ribbons, labelled in the legend
+band_labels <- c(nets = "LLIN use (interquartile range over bioassay pixels)",
+                 mortality = "Mortality (95% credible interval)")
+
 net_class_fig <- pyrethroid_net_class_points %>%
   ggplot(
     aes(
@@ -352,20 +356,19 @@ net_class_fig <- pyrethroid_net_class_points %>%
       x = year,
       ymax = upper,
       ymin = lower,
-      group = net_use_class
+      group = net_use_class,
+      fill = band_labels[["nets"]]
     ),
     data = df_net_use,
-    fill = grey(0.9),
     colour = grey(0.7)
   ) +
   geom_ribbon(
     aes(
       ymax = susc_pop_upper,
       ymin = susc_pop_lower,
-      fill = insecticide
+      fill = band_labels[["mortality"]]
     ),
-    data = pop_mort_sry_net_class,
-    fill = pyrethroid_blue
+    data = pop_mort_sry_net_class
   ) +
   # geom_point(
   #   aes(
@@ -386,24 +389,31 @@ net_class_fig <- pyrethroid_net_class_points %>%
   ) +
   facet_wrap(~net_use_class) +
   guides(
-    size = "none"
+    size = guide_legend(title = "Effective\nsamples"),
+    fill = guide_legend(title = NULL, ncol = 1)
+  ) +
+  scale_fill_manual(
+    values = setNames(c(grey(0.9), pyrethroid_blue), band_labels)
   ) +
   scale_y_continuous(
     labels = scales::percent,
     sec.axis = sec_axis(
       ~.,
-      name = "LLIN use (grey)",
+      name = "LLIN use",
       labels = scales::percent,
     )
   ) +
-  scale_size_area() +
+  scale_size_area(
+    labels = scales::number_format(big.mark = ",")
+  ) +
   xlab("") +
   ylab("Mortality in pyrethroid bioassays") +
   coord_cartesian(xlim = c(2000, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +
   theme(
-    strip.text.x = element_text(hjust = 0)
+    strip.text.x = element_text(hjust = 0),
+    legend.position = "bottom"
   )
 
 net_class_fig
@@ -412,4 +422,4 @@ ggsave("figures/all_africa_net_use_pred_data.png",
        bg = "white",
        scale = 0.8,
        width = 8,
-       height = 4)
+       height = 4.8)

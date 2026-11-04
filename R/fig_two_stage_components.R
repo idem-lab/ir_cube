@@ -3,7 +3,7 @@
 #
 #   figures/two_stage/supp_components_realisations.png (and .pdf)
 #     joint random realisations of every component through time, stacked on a
-#     shared time axis: net use, the dynamical model's logit m, the annual
+#     shared time axis: the dynamical model's logit m, the annual
 #     anomalies eta, their accumulation xi, the static omega, the target
 #     m + omega + xi, and mortality with the data
 #   figures/two_stage/supp_components_intervals.png (and .pdf)
@@ -50,7 +50,8 @@ dynamical <- readRDS(file.path(maps_dir, "dynamical.rds"))
 train_k <- tibble(lon = df$longitude[rows_k], lat = df$latitude[rows_k],
                   year = df$year[rows_k], cell = df$cell[rows_k],
                   died = df$died[rows_k],
-                  mosquito_number = df$mosquito_number[rows_k])
+                  mosquito_number = df$mosquito_number[rows_k],
+                  site = df$site[rows_k])
 stopifnot(fit$n_obs == nrow(train_k),
           ncol(dynamical$logit_train) == nrow(train_k),
           max(abs(fit$m_ref - colMeans(dynamical$logit_train))) < 1e-12)
@@ -196,7 +197,6 @@ omega_array <- array(rep(omega, each = n_years_all), dim(correction))
 xi <- correction - omega_array
 eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]
 lambda <- m + correction
-nets <- covariates$time_varying[, , "nets"]
 rm(dynamical, covariates, correction, omega_array)
 
 
@@ -204,28 +204,28 @@ rm(dynamical, covariates, correction, omega_array)
 
 years <- years_all
 
-# panel titles, in the order of `pixels`
+# panel titles, in the order of `pixels`: the pixel's site (the most common
+# site name of its bioassays) and country; the pixel without data has no site,
+# and its distance to the nearest bioassay instead
 role_title <- c(well = "A) Well sampled",
                 none = "B) No data",
                 large = "C) Large correction")
+pixel_site <- vapply(pixels$cell, function(cell) {
+  sites <- train_k$site[train_k$cell == cell]
+  if (length(sites) == 0) NA_character_ else names(which.max(table(sites)))
+}, character(1))
 pixels <- pixels %>%
-  mutate(title = sprintf("%s: %s\n%s; %s",
-                         role_title[role], country,
-                         sprintf("%.1f°%s, %.1f°%s",
-                                 abs(lat), ifelse(lat >= 0, "N", "S"),
-                                 abs(lon), ifelse(lon >= 0, "E", "W")),
-                         ifelse(n_assays > 0,
-                                sprintf("%i assays, %i years", n_assays,
-                                        n_years),
-                                sprintf("nearest assay %.0f km",
-                                        nearest_km))),
+  mutate(title = sprintf("%s\n%s", role_title[role],
+                         ifelse(is.na(pixel_site),
+                                sprintf("%s, %.0f km from a bioassay",
+                                        country, nearest_km),
+                                paste(pixel_site, country, sep = ", "))),
          title = factor(title, levels = title))
 
 # the style of the dynamical-model time-series figures (R/summarise_model_fit.R,
-# R/fig_temporal_preds_net_use.R): theme_minimal, the pyrethroid blue, net use
-# as a thick grey line, percentages, no x label
+# R/fig_temporal_preds_net_use.R): theme_minimal, the pyrethroid blue,
+# percentages, no x label
 pyrethroid_blue <- "#56B1F7"
-net_grey <- grey(0.5)
 realisation_cols <- c("#E69F00", "#009E73", "#CC79A7")
 year_breaks <- seq(2000, 2030, by = 10)
 
@@ -295,18 +295,13 @@ zero_line <- geom_hline(yintercept = 0, colour = grey(0.6), linewidth = 0.3)
 
 m_mean <- pixel_year(apply(m, 1:2, mean), "value")
 
-p_nets <- row_plot(
-  pixel_year(t(nets), "value"), "LLIN use",
-  geom_line(aes(y = value), colour = net_grey, linewidth = 1),
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1),
-                     breaks = c(0, 0.5, 1)),
-  strip = TRUE)
 p_m <- row_plot(
   realisations(m, which_draws), "Dynamical\nlogit m",
   list(geom_line(aes(y = value), data = m_mean, colour = "black",
                  linewidth = 0.6),
        geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
-       realisation_colour))
+       realisation_colour),
+  strip = TRUE)
 p_eta <- row_plot(
   realisations(eta, which_draws), "Annual\nanomaly η",
   list(zero_line,
@@ -335,20 +330,20 @@ p_mort <- row_plot(
                   colour = grey(0.35), stroke = 0.2, alpha = 0.7),
        geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour,
-       scale_size_area(max_size = 2.5)),
+       scale_size_area(max_size = 4)),
   scale_y_continuous(labels = scales::percent, limits = c(0, 1),
                      breaks = c(0, 0.5, 1)),
   bottom = TRUE)
 
-fig_realisations <- patchwork::wrap_plots(p_nets, p_m, p_eta, p_xi, p_omega,
+fig_realisations <- patchwork::wrap_plots(p_m, p_eta, p_xi, p_omega,
                                           p_lambda, p_mort, ncol = 1,
-                                          heights = c(1, 1.1, 1, 1.1, 0.8, 1.1,
+                                          heights = c(1.1, 1, 1.1, 0.8, 1.1,
                                                       1.2)) &
   theme(plot.margin = margin(1, 4, 1, 4))
 for (ext in c("png", "pdf")) {
   ggsave(file.path(figure_dir, sprintf("supp_components_realisations.%s", ext)),
          plot = fig_realisations,
-         bg = "white", width = 7.5, height = 8.4, dpi = 300,
+         bg = "white", width = 7.5, height = 7.4, dpi = 300,
          device = if (ext == "pdf") cairo_pdf else NULL)
 }
 
@@ -384,7 +379,7 @@ p_int <- ggplot(intervals, aes(x = year)) +
   facet_wrap(~title, nrow = 1) +
   scale_fill_manual(values = model_cols, name = NULL) +
   scale_colour_manual(values = model_cols, name = NULL) +
-  scale_size_area(max_size = 2.5, guide = "none") +
+  scale_size_area(max_size = 4, guide = "none") +
   scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   x_scale +
   xlab(NULL) +
@@ -395,18 +390,11 @@ p_int <- ggplot(intervals, aes(x = year)) +
         legend.margin = margin(0, 0, 0, 0),
         legend.box.spacing = unit(2, "pt"),
         axis.text.x = element_blank())
-p_int_nets <- row_plot(
-  pixel_year(t(nets), "value"), "LLIN use",
-  geom_line(aes(y = value), colour = net_grey, linewidth = 1),
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1),
-                     breaks = c(0, 0.5, 1)),
-  bottom = TRUE)
-
-fig_intervals <- patchwork::wrap_plots(p_int, p_int_nets, ncol = 1, heights = c(3, 1))
+fig_intervals <- p_int + theme(axis.text.x = element_text())
 for (ext in c("png", "pdf")) {
   ggsave(file.path(figure_dir, sprintf("supp_components_intervals.%s", ext)),
          plot = fig_intervals,
-         bg = "white", width = 8, height = 4.5, dpi = 300,
+         bg = "white", width = 8, height = 3.6, dpi = 300,
          device = if (ext == "pdf") cairo_pdf else NULL)
 }
 report("figures written")

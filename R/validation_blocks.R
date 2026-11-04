@@ -464,7 +464,8 @@ if (identical(environment(), globalenv())) {
                  alpha = 0.85) +
       scale_colour_manual(values = block_colours, name = "Held out in fold",
                           drop = FALSE) +
-      scale_size_area(max_size = 3.2, guide = "none") +
+      scale_size_area(max_size = 4.5, name = "Bioassays",
+                      limits = c(0, max_records)) +
       coord_sf(expand = TRUE) +
       labs(x = NULL, y = NULL, title = this_country) +
       theme_minimal(base_size = 11) +
@@ -472,27 +473,24 @@ if (identical(environment(), globalenv())) {
             plot.title = element_text(size = 11, hjust = 0.5))
   }
 
+  # Caption: the spatial block folds, each validation country cut into
+  # n_blocks contiguous regions of equal area. Point size is the number of
+  # bioassays at the pixel; every pixel is held out in exactly one fold.
+  # one size scale across the panels, so their legends collect into one
+  max_records <- max(map_data$records)
   panels <- lapply(sort(unique(map_data$country_name)), country_panel)
   country_map <- patchwork::wrap_plots(panels, nrow = 2) +
-    patchwork::plot_layout(guides = "collect") +
-    patchwork::plot_annotation(
-      title = sprintf(paste("Spatial block folds: each country cut into %i",
-                            "contiguous regions of equal area"), n_blocks),
-      subtitle = paste("Point size is the number of bioassays at that pixel;",
-                       "every pixel is held out in exactly one fold")
-    ) &
+    patchwork::plot_layout(guides = "collect") &
     theme(legend.position = "bottom")
 
   ggsave(sprintf("figures/CV_spatial_blocks_%i.png", n_blocks), country_map,
          bg = "white", width = 11, height = 7.5)
 
   # and the continental view, showing what stays in training throughout
-  number_word <- function(n) {
-    if (n <= 10) c("one", "two", "three", "four", "five", "six", "seven",
-                   "eight", "nine", "ten")[n] else as.character(n)
-  }
   untested <- cells %>% filter(is.na(block_of_cell[as.character(cell)]))
 
+  # Caption: the spatial block folds in the validation countries. Crosses are
+  # the bioassays in the other countries, which stay in training throughout.
   africa_map <- ggplot() +
     geom_sf(data = st_union(borders), fill = grey(0.97), colour = grey(0.8),
             linewidth = 0.2) +
@@ -504,16 +502,9 @@ if (identical(environment(), globalenv())) {
                aes(x = longitude, y = latitude, colour = fold, size = records),
                alpha = 0.8) +
     scale_colour_manual(values = block_colours, name = "Held out in fold") +
-    scale_size_area(max_size = 3, name = "Bioassays") +
+    scale_size_area(max_size = 4.5, name = "Bioassays") +
     coord_sf(expand = FALSE) +
-    labs(x = NULL, y = NULL,
-         title = sprintf("Spatial block folds in the %s validation countries",
-                         number_word(n_distinct(map_data$country_name))),
-         subtitle = sprintf(paste("Crosses are bioassays in the other %i",
-                                  "countries, which stay in training",
-                                  "throughout"),
-                            n_distinct(df$country_name) -
-                              n_distinct(map_data$country_name))) +
+    labs(x = NULL, y = NULL) +
     theme_minimal() +
     theme(legend.position = "right", panel.grid = element_blank())
 

@@ -623,9 +623,9 @@ region_all <- region_pop_mort_sry %>%
   ) +
   scale_y_continuous(
     labels = scales::percent,
-    breaks = c(0, 1),
+    breaks = c(0, 0.5, 1),
     limits = c(0, 1)) +
-  scale_x_continuous(breaks = c(2000, 2020)) +
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
   scale_size_area(
     labels = scales::number_format(
       accuracy = 100,
@@ -638,13 +638,13 @@ region_all <- region_pop_mort_sry %>%
     palette = "Accent"
   ) +
   xlab("") +
-  # suppress ylab, as it is on the other panel
-  ylab("") +
+  ylab("Mortality") +
   coord_cartesian(xlim = c(1995, 2024)) +
   guides(
     fill = guide_legend(title = "")
   ) +
-  theme_minimal() +
+  # smaller text than the default, to fit more axis labels
+  theme_minimal(base_size = 9) +
   theme(
     strip.text.x = element_text(hjust = 0)
   )

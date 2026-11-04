@@ -570,18 +570,21 @@ panel_c <- ggplot() +
       medium = band_cols[2],
       highest = band_cols[1]
     ),
+    labels = c(lowest = "Lowest", medium = "Medium", highest = "Highest"),
     na.translate = FALSE,
     # note we arre using element_markdown() for legend titles so need this html
     # linebreak version
     name = "LLIN effectiveness<br>(2025)",
     na.value = "transparent"
   ) +
+  # no padding around Africa, so it fills the panel
+  coord_sf(expand = FALSE) +
   theme_ir_maps() +
   theme(
     strip.text.x = element_text(hjust = 0),
     plot.margin = unit(rep(0, 4), "cm"),
     legend.position = "inside",
-    legend.position.inside = c(0.05, 0.25),
+    legend.position.inside = c(0.02, 0.22),
     legend.key.height = rel(0.8),
     legend.key.width = rel(0.8),
     legend.text.position = "left",

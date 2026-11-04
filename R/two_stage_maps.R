@@ -556,12 +556,6 @@ correction_limit <- ceiling(pooled_quantile("correction_mean") * 4) / 4
 difference_limit <- ceiling(pooled_quantile("difference_pp") / 5) * 5
 sd_limit <- ceiling(pooled_quantile("two_stage_sd_pp") / 5) * 5
 
-model_note <- function(type) {
-  T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf(paste("target m + omega + xi, without u, p and sy; data to %i,",
-                "later years are the AR(1) forecast of xi"), T_k)
-}
-
 # the posterior uncertainty as an SD and as n*, under both readings of u and
 # p (local_terms). The posterior mean is mapped by R/fig_ir_maps.R. The
 # paper's maps (SD, n*_pop) are titled with the insecticide alone, as
@@ -590,7 +584,8 @@ for (type in c(insecticides_plot, "llin_effective")) {
       binned_scale("fill", palette = function(x) {
                      RColorBrewer::brewer.pal(10, "PuOr")[-(5:6)][seq_along(x)]
                    },
-                   name = "n*<br>(bioassays)", transform = "log10",
+                   name = "Equivalent<br>number of<br>bioassays (n*)",
+                   transform = "log10",
                    breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10),
                    labels = c("0.1", "0.2", "0.5", "1", "2", "5", "10"),
                    limits = c(1e-6, 1e6), oob = scales::squish,
@@ -638,20 +633,13 @@ for (type in insecticides_plot) {
   year_panels(
     read_map(type, "correction_mean"),
     diverging_scale("Correction<br>(logit)", correction_limit),
-    title = sprintf("%s: second-stage correction", type),
-    subtitle = paste("Posterior mean of omega + xi on the logit scale",
-                     "(+ = higher mortality than the dynamical model);",
-                     model_note(type)),
+    title = type_title(type),
     file = file.path(figure_dir, sprintf("%s_correction_map.png", type)))
 
   year_panels(
     read_map(type, "difference_pp"),
     diverging_scale("Difference<br>(% points)", difference_limit),
-    title = sprintf("%s: two-stage minus dynamical", type),
-    subtitle = paste("Difference in posterior mean mortality",
-                     "(including the shrinkage towards 50% from the",
-                     "correction's variance), percentage points;",
-                     model_note(type)),
+    title = type_title(type),
     file = file.path(figure_dir, sprintf("%s_difference_map.png", type)))
 }
 
@@ -672,25 +660,28 @@ ggplot() +
   # a top margin, or the title is clipped
   theme(plot.margin = unit(c(0.3, 0, 0, 0), "cm"),
         legend.ticks = element_blank()) +
-  labs(title = sprintf("Second-stage correction in %i", compare_year),
-       subtitle = "Posterior mean of omega + xi, logit scale")
+  labs(title = sprintf("Second-stage correction in %i", compare_year))
 ggsave(file.path(figure_dir,
                  sprintf("correction_all_types_%i.png", compare_year)),
        bg = "white", width = 10, height = 10, scale = 0.8, dpi = 300)
 
-# fitted hyperparameters per type
-hyperparameters %>%
-  select(insecticide_type,
-         `omega range (km)` = range_omega, `omega SD` = sigma_omega,
-         `eta range (km)` = range_eta, `eta SD` = sigma_eta, phi = phi,
-         tau = tau, sigma_p = sigma_p, sigma_sy = sigma_sy) %>%
-  pivot_longer(-insecticide_type) %>%
-  mutate(name = factor(name, levels = unique(name)),
+# fitted hyperparameters per type: the posterior mean and 95% interval
+# (fit_hyper_intervals())
+hyper_symbols <- c(range_omega = "omega~range~(km)", sigma_omega = "sigma[omega]",
+                   range_eta = "eta~range~(km)", sigma_eta = "sigma[eta]",
+                   phi = "phi", tau = "tau", sigma_p = "sigma[p]",
+                   sigma_sy = "sigma[sy]")
+bind_rows(lapply(insecticides_plot, function(type) {
+  fit <- readRDS(file.path(type_dir(type), "fit.rds"))
+  mutate(fit_hyper_intervals(fit), insecticide_type = type)
+})) %>%
+  mutate(name = factor(hyper_symbols[hyperparameter], levels = hyper_symbols),
          insecticide_type = factor(insecticide_type,
                                    levels = rev(insecticides_plot))) %>%
-  ggplot(aes(x = value, y = insecticide_type, colour = insecticide_type)) +
-  geom_point(size = 2) +
-  facet_wrap(~name, scales = "free_x", nrow = 1) +
+  ggplot(aes(x = mean, xmin = lower, xmax = upper, y = insecticide_type,
+             colour = insecticide_type)) +
+  geom_pointrange(size = 0.4, linewidth = 0.6) +
+  facet_wrap(~name, scales = "free_x", nrow = 1, labeller = label_parsed) +
   scale_colour_manual(values = insecticides_col, guide = "none") +
   labs(x = NULL, y = NULL,
        title = "Second-stage hyperparameters, final model, fitted to all data") +

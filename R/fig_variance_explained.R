@@ -40,23 +40,28 @@ change <- read.csv("outputs/cv_change_skill.csv")
 panel_order <- c("A", "B", "C", "D", "E")
 bar_order <- c("local", "nearest", "dynamical", "two_stage")
 
+# a distance column of a panel's rows (the same on each)
+panel_value <- function(panel, column) {
+  unique(level[[column]][level$panel == panel & !is.na(level[[column]])])
+}
 km <- function(panel) {
-  round(unique(level$median_km[level$panel == panel & !is.na(level$median_km)]))
+  sprintf("%.0f km (%.0f–%.0f km)", panel_value(panel, "median_km"),
+          panel_value(panel, "km_05"), panel_value(panel, "km_95"))
 }
 # Two-line titles, the panel's name in bold and, below it, how far its
 # held-out bioassays sit from the data: the median distance (and, for the
-# forecasts, years) to the nearest bioassay the nearest bioassay bar draws on
+# forecasts, years) to the nearest bioassay the nearest bioassay bar draws on,
+# with the central 90% of them
 years <- function(panel) {
-  unique(level$median_years[level$panel == panel &
-                              !is.na(level$median_years)])
+  sprintf("%g years (%g–%g years)", panel_value(panel, "median_years"),
+          panel_value(panel, "years_05"), panel_value(panel, "years_95"))
 }
 title <- function(name, detail) sprintf("**%s**<br>%s", name, detail)
 distance <- function(panel) {
-  sprintf("Median %i km from nearest bioassay", km(panel))
+  sprintf("Median %s from nearest bioassay", km(panel))
 }
 distance_years <- function(panel) {
-  sprintf("Median %i km %g years from nearest bioassay", km(panel),
-          years(panel))
+  sprintf("Median %s, %s from nearest bioassay", km(panel), years(panel))
 }
 panel_titles <- c(
   A = title("A) In sample", "Prediction at location with a bioassay"),
@@ -105,6 +110,7 @@ skill_row <- function(data, y_title, y_limits, y_step = 20) {
                        expand = expansion(add = 0.4 + expand_x)) +
     scale_y_continuous(breaks = seq(y_step * ceiling(y_limits[1] / y_step),
                                     100, y_step),
+                       labels = scales::label_percent(scale = 1),
                        expand = expansion(add = 0)) +
     coord_cartesian(ylim = y_limits, clip = "off") +
     labs(x = NULL, y = y_title) +
@@ -126,7 +132,7 @@ axis_floor <- function(lower) {
 }
 level_floor <- axis_floor(bars$lower[bars$panel %in%
                                        c(space_panels, time_panels)])
-level_title <- "% of variance explained"
+level_title <- "Variance explained"
 
 space_row <- skill_row(filter(bars, panel %in% space_panels), level_title,
                        c(level_floor, 100))
@@ -194,9 +200,11 @@ pooled_level <- pooled_panel(
   title("A) Level, in sample", "Independent bioassays at the location"))
 pooled_change <- pooled_panel(
   filter(change, panel == "in_sample"), "change",
-  title("B) Change, in sample", sprintf(paste(
-    "Independent pairs of bioassays at the location, median %g years",
-    "apart"), change$median_gap[change$panel == "in_sample"][1])))
+  title("B) Change, in sample", with(
+    filter(change, panel == "in_sample")[1, ],
+    sprintf(paste("Independent pairs of bioassays at the location, median",
+                  "%g years (%g–%g years) apart"),
+            median_gap, gap_05, gap_95))))
 stopifnot(nrow(pooled_level) == 5, nrow(pooled_change) == 5)
 
 pooled_row <- function(data, y_title) {
@@ -209,7 +217,7 @@ pooled_floors <- sapply(list(pooled_level, pooled_change), function(data) {
   axis_floor(data$lower)
 })
 pooled_figure <- pooled_row(pooled_level, level_title) /
-  pooled_row(pooled_change, "Skill against no change (%)") +
+  pooled_row(pooled_change, "Skill against no change") +
   plot_layout(heights = 100 - pooled_floors)
 
 ggsave("figures/CV_in_sample_pooled.png", pooled_figure, width = 7.5,

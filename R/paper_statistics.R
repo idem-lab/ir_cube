@@ -11,7 +11,8 @@
 #   2. the external overdispersion rho per insecticide, with the replicate-pair
 #      check of it (R/fig_illustrate_bioassay_variability.R);
 #   3. the second-stage hyperparameters per insecticide: the mode, and the
-#      posterior mean and 95% interval from the CCD points (below);
+#      posterior mean and 95% interval from the CCD points
+#      (fit_hyper_intervals());
 #   4. cross-validation coverage of the central 50% and 95% predictive
 #      intervals and mean PIT, per model and test (outputs/cv_summary.csv).
 # The mechanistic model's parameters are summarised by R/summarise_posterior.R,
@@ -67,31 +68,13 @@ print(rho %>%
 
 # 3. second-stage hyperparameters ------------------------------------------------
 
-# The CCD points (ccd_points(), R/two_stage_correction.R) and their weights
-# reproduce the posterior's mean and covariance of theta (the optimiser's
-# scale) if it is Gaussian. The 95% interval is that of the Gaussian with the
-# weighted points' mean and SD, mapped to the hyperparameter's scale; the
-# posterior mean is the weighted mean of the hyperparameter at the points (as
-# the _ccd columns of hyperparameters.csv)
-hyper_names <- c("sigma_omega", "range_omega", "sigma_eta", "range_eta",
-                 "phi", "tau", "sigma_p", "sigma_sy")
-hyper_transform <- list(exp, exp, exp, exp, plogis, exp, exp, exp)
+# fit_hyper_intervals(), R/two_stage_correction.R
+source("R/two_stage_correction.R")
 types <- read.csv("outputs/two_stage/maps/hyperparameters.csv")$insecticide_type
 hyper <- bind_rows(lapply(types, function(type) {
   fit <- readRDS(file.path("outputs/two_stage/maps", type, "fit.rds"))
-  theta <- fit$ccd$theta
-  weight <- fit$ccd$weight
-  stopifnot(ncol(theta) == length(hyper_names))
-  mean_theta <- colSums(theta * weight)
-  sd_theta <- sqrt(colSums(sweep(theta, 2, mean_theta) ^ 2 * weight))
-  tibble(insecticide_type = type,
-         hyperparameter = hyper_names,
-         mode = unlist(fit$hyper[hyper_names]),
-         mean = colSums(as.matrix(fit$ccd$hyper[hyper_names]) * weight),
-         lower = mapply(function(f, m, s) f(m - qnorm(0.975) * s),
-                        hyper_transform, mean_theta, sd_theta),
-         upper = mapply(function(f, m, s) f(m + qnorm(0.975) * s),
-                        hyper_transform, mean_theta, sd_theta))
+  mutate(fit_hyper_intervals(fit), insecticide_type = type,
+         .before = everything())
 }))
 cat("\n3. second-stage hyperparameters (ranges in km; phi the AR(1)",
     "coefficient of xi's increments)\n")

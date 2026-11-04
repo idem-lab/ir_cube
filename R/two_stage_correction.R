@@ -556,6 +556,33 @@ fit_summary <- function(fit) {
 }
 
 
+# The posterior of each hyperparameter of a fit: its value at theta_hat
+# (mode), its mean over the CCD points, and a 95% interval. The weighted CCD
+# points have the posterior's mean and covariance of theta (the optimiser's
+# scale) if it is Gaussian (ccd_points()), so the interval is that Gaussian's,
+# mapped to the hyperparameter's scale
+fit_hyper_intervals <- function(fit) {
+  names_hyper <- c("sigma_omega", "range_omega", "sigma_eta", "range_eta",
+                   "phi", vapply(correction_iid_terms, `[[`, "", "sd"))
+  to_hyper <- c(rep(list(exp), 4), list(plogis),
+                rep(list(exp), length(correction_iid_terms)))
+  theta <- fit$ccd$theta
+  weight <- fit$ccd$weight
+  stopifnot(ncol(theta) == length(names_hyper))
+  mean_theta <- colSums(theta * weight)
+  sd_theta <- sqrt(colSums(sweep(theta, 2, mean_theta) ^ 2 * weight))
+  z <- qnorm(0.975)
+  tibble::tibble(
+    hyperparameter = names_hyper,
+    mode = unlist(fit$hyper[names_hyper]),
+    mean = colSums(as.matrix(fit$ccd$hyper[names_hyper]) * weight),
+    lower = mapply(function(f, m, s) f(m - z * s), to_hyper, mean_theta,
+                   sd_theta),
+    upper = mapply(function(f, m, s) f(m + z * s), to_hyper, mean_theta,
+                   sd_theta))
+}
+
+
 # prediction ------------------------------------------------------------------------
 
 # Cut-posterior shift of the latent mode when the offset at the training
