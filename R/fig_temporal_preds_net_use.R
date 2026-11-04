@@ -6,6 +6,7 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/two_stage_predictions.R")
+source("R/figure_cache.R")
 
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
@@ -306,39 +307,57 @@ cell_net_use_class <- net_use_cell_lookup %>%
 stopifnot(length(cell_net_use_class) == nrow(weights_mat))
 cell_country <- data_cell_country(df)
 
-# compute the predicted susceptibility to each pyrethroid, averaged over the
-# cells in the low and high net use classes, weighted by the numbers of
-# mosquitoes tested there: draws x classes x years of the two-stage model's
-# posterior (R/two_stage_predictions.R)
-pyrethroid_draws <- lapply(setNames(nm = pyrethroids), function(type) {
-  k <- match(type, types)
-  weights <- sapply(net_use_classes, function(net_use_class) {
-    w <- weights_mat[, k] * (cell_net_use_class == net_use_class)
-    if (sum(w) > 0) w / sum(w) else w
+# The predicted susceptibility to the pyrethroids, averaged over the cells in
+# the low and high net use classes, weighted by the numbers of mosquitoes
+# tested there: the two-stage model's posterior (R/two_stage_predictions.R)
+# per pyrethroid, combined over the pyrethroids, weighted by the numbers
+# tested of each in each class (the types' draws share their dynamical draws,
+# so are combined draw by draw). The posterior mean and 95% credible interval
+# per class and year
+predict_net_classes <- function(pyrethroids, types, years, df, unique_cells,
+                                cell_country, weights_mat, cell_net_use_class,
+                                net_use_classes,
+                                pyrethroid_net_class_weights) {
+  # draws x classes x years per pyrethroid
+  pyrethroid_draws <- lapply(setNames(nm = pyrethroids), function(type) {
+    k <- match(type, types)
+    weights <- sapply(net_use_classes, function(net_use_class) {
+      w <- weights_mat[, k] * (cell_net_use_class == net_use_class)
+      if (sum(w) > 0) w / sum(w) else w
+    })
+    setup <- two_stage_setup(type, years, df)
+    two_stage_weighted_draws(setup, unique_cells, cell_country,
+                             weights)$two_stage
   })
-  setup <- two_stage_setup(type, years_predict, df)
-  two_stage_weighted_draws(setup, unique_cells, cell_country,
-                           weights)$two_stage
-})
+  bind_rows(
+    lapply(net_use_classes, function(net_use_class) {
+      susc <- Reduce(`+`, lapply(pyrethroids, function(type) {
+        k <- match(type, types)
+        pyrethroid_net_class_weights[k, net_use_class] *
+          pyrethroid_draws[[type]][, net_use_class, ]
+      }))
+      tibble(
+        net_use_class = net_use_class,
+        year = years,
+        susc_pop_mean = colMeans(susc),
+        susc_pop_lower = apply(susc, 2, quantile, 0.025),
+        susc_pop_upper = apply(susc, 2, quantile, 0.975)
+      )
+    })
+  )
+}
 
-# combine over the pyrethroids, weighted by the numbers tested of each in each
-# class; the types' draws share their dynamical draws, so are combined draw by
-# draw. Then the posterior mean and 95% credible interval
-pop_mort_sry_net_class <- bind_rows(
-  lapply(net_use_classes, function(net_use_class) {
-    susc <- Reduce(`+`, lapply(pyrethroids, function(type) {
-      k <- match(type, types)
-      pyrethroid_net_class_weights[k, net_use_class] *
-        pyrethroid_draws[[type]][, net_use_class, ]
-    }))
-    tibble(
-      net_use_class = net_use_class,
-      year = years_predict,
-      susc_pop_mean = colMeans(susc),
-      susc_pop_lower = apply(susc, 2, quantile, 0.025),
-      susc_pop_upper = apply(susc, 2, quantile, 0.975)
-    )
-  })
+pop_mort_sry_net_class <- cached_figure_data(
+  "temporary/fig_temporal_preds_net_use.rds", predict_net_classes,
+  args = list(pyrethroids = pyrethroids, types = types, years = years_predict,
+              df = df, unique_cells = unique_cells,
+              cell_country = cell_country, weights_mat = weights_mat,
+              cell_net_use_class = cell_net_use_class,
+              net_use_classes = net_use_classes,
+              pyrethroid_net_class_weights = pyrethroid_net_class_weights),
+  sources = c("R/packages.R", "R/functions.R", "R/bioassay_subset.R",
+              "R/two_stage_predictions.R"),
+  inputs = two_stage_figure_inputs(pyrethroids)
 )
 
 # the two ribbons, labelled in the legend

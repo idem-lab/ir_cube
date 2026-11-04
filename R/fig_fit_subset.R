@@ -6,12 +6,15 @@
 #
 #   Rscript R/fig_fit_subset.R
 #
-# Run after R/two_stage_maps.R.
+# Run after R/two_stage_maps.R. The predictions are cached in
+# temporary/fig_fit_subset.rds (R/figure_cache.R), so changes to the plot
+# alone rerun in seconds.
 
 source("R/packages.R")
 source("R/functions.R")
 source("R/two_stage_predictions.R")
 source("R/validation_functions.R")
+source("R/figure_cache.R")
 
 # the modelled bioassays and their cells, as the full fit has them
 fit <- new.env()
@@ -54,30 +57,30 @@ locations_plot <- df %>%
   )
 
 # predict these with the two-stage model: the population-level mortality,
-# ilogit(m + omega + xi), and the mortality in new bioassays of 100 mosquitoes
-# under binomial sampling from it, and under the model's own observation
-# process: beta-binomial sampling, at the per-type overdispersion, from the
-# mortality with fresh pixel-year, pixel and study-year noise, ilogit(m +
-# omega + xi + u + p + sy). Draws x cells x years
-sample_size_plot <- 100
-location_cell_ids <- locations_plot$cell_id
-preds_plot <- bind_rows(
-  lapply(insecticides_plot_small, function(type) {
-    setup <- two_stage_setup(type, years_predict, df)
-    identity <- diag(length(location_cell_ids))
-    cells <- unique_cells[location_cell_ids]
-    country <- cell_country[location_cell_ids]
+# ilogit(m + omega + xi), and the mortality in new bioassays of
+# `sample_size` mosquitoes under binomial sampling from it, and under the
+# model's own observation process: beta-binomial sampling, at the per-type
+# overdispersion, from the mortality with fresh pixel-year, pixel and
+# study-year noise, ilogit(m + omega + xi + u + p + sy). The posterior mean
+# and 95% intervals per type, cell and year
+predict_locations <- function(types, years, df, unique_cells, cell_country,
+                              cell_ids, sample_size) {
+  bind_rows(lapply(types, function(type) {
+    setup <- two_stage_setup(type, years, df)
+    identity <- diag(length(cell_ids))
+    cells <- unique_cells[cell_ids]
+    country <- cell_country[cell_ids]
     population <- two_stage_weighted_draws(setup, cells, country,
                                            identity)$two_stage
     assay <- two_stage_weighted_draws(setup, cells, country, identity,
                                       noise = TRUE)$two_stage
     rho <- rho_for_record(tibble(insecticide_type = type), rho_lookup())
     binomial_mortality <- array(
-      rbinom(length(population), sample_size_plot, population),
-      dim(population)) / sample_size_plot
+      rbinom(length(population), sample_size, population),
+      dim(population)) / sample_size
     betabinomial_mortality <- array(
-      rbetabinom(length(assay), sample_size_plot, assay, rho),
-      dim(assay)) / sample_size_plot
+      rbetabinom(length(assay), sample_size, assay, rho),
+      dim(assay)) / sample_size
     # a quantile over the draws, for every cell and year
     quantiles <- function(x, prob) as.vector(apply(x, 2:3, quantile, prob))
 
@@ -85,10 +88,7 @@ preds_plot <- bind_rows(
     # (posterior uncertainty), and posterior predictive intervals (posterior
     # uncertainty and sampling error) for observed mortality from binomial
     # sampling, and from the model's observation process
-    expand_grid(
-      year = years_predict,
-      cell_id = location_cell_ids
-    ) %>%
+    expand_grid(year = years, cell_id = cell_ids) %>%
       mutate(
         insecticide_type = type,
         Mortality = as.vector(apply(population, 2:3, mean)),
@@ -99,7 +99,17 @@ preds_plot <- bind_rows(
         betabinomial_lower = quantiles(betabinomial_mortality, 0.025),
         betabinomial_upper = quantiles(betabinomial_mortality, 0.975)
       )
-  })
+  }))
+}
+
+preds_plot <- cached_figure_data(
+  "temporary/fig_fit_subset.rds", predict_locations,
+  args = list(types = insecticides_plot_small, years = years_predict, df = df,
+              unique_cells = unique_cells, cell_country = cell_country,
+              cell_ids = locations_plot$cell_id, sample_size = 100),
+  sources = c("R/packages.R", "R/functions.R", "R/two_stage_predictions.R",
+              "R/validation_functions.R"),
+  inputs = two_stage_figure_inputs(insecticides_plot_small)
 ) %>%
   left_join(
     locations_plot,
