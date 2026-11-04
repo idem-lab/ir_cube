@@ -361,8 +361,8 @@ pop_mort_sry_net_class <- cached_figure_data(
 )
 
 # the two ribbons, labelled in the legend
-band_labels <- c(nets = "LLIN use (interquartile range over bioassay pixels)",
-                 mortality = "Mortality (95% credible interval)")
+band_labels <- c(nets = "LLIN use (interquartile\nrange over bioassay pixels)",
+                 mortality = "Mortality (95%\ncredible interval)")
 
 net_class_fig <- pyrethroid_net_class_points %>%
   ggplot(
@@ -409,7 +409,7 @@ net_class_fig <- pyrethroid_net_class_points %>%
   facet_wrap(~net_use_class) +
   guides(
     size = guide_legend(title = "Effective\nsamples"),
-    fill = guide_legend(title = NULL, ncol = 1)
+    fill = guide_legend(title = NULL, ncol = 1, order = 1)
   ) +
   scale_fill_manual(
     values = setNames(c(grey(0.9), pyrethroid_blue), band_labels)
@@ -425,6 +425,7 @@ net_class_fig <- pyrethroid_net_class_points %>%
   scale_size_area(
     labels = scales::number_format(big.mark = ",")
   ) +
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
   xlab("") +
   ylab("Mortality in pyrethroid bioassays") +
   coord_cartesian(xlim = c(2000, 2024),
@@ -432,7 +433,10 @@ net_class_fig <- pyrethroid_net_class_points %>%
   theme_minimal() +
   theme(
     strip.text.x = element_text(hjust = 0),
-    legend.position = "bottom"
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.key.spacing.y = unit(4, "pt"),
+    panel.spacing.x = unit(12, "pt")
   )
 
 net_class_fig
@@ -440,5 +444,5 @@ net_class_fig
 ggsave("figures/all_africa_net_use_pred_data.png",
        bg = "white",
        scale = 0.8,
-       width = 8,
+       width = 10,
        height = 4.8)
