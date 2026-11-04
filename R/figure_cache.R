@@ -8,8 +8,9 @@
 #   - the code of the compute function (parsed, so its comments don't count)
 #     and its arguments: settings and data go in as arguments, never as
 #     globals the function reads;
-#   - the R files the script sources, and those they source in turn
-#     (r_sources()), whole: any edit to them counts;
+#   - the code of the R files the script sources, and of those they source
+#     in turn (r_sources()), parsed like the compute function: any change to
+#     their code counts, comments don't;
 #   - the contents of the input files, and of every file in the input
 #     directories.
 # A cache whose fingerprint matches is read; otherwise the script reports what
@@ -31,14 +32,22 @@ r_sources <- function(files) {
   sort(found)
 }
 
+# the hash of R code as parsed, without its comments or layout
+code_hash <- function(code) {
+  rlang::hash(deparse(code, control = c("keepNA", "keepInteger", "niceNames")))
+}
+
 figure_fingerprint <- function(compute, args, sources, inputs) {
+  sources <- r_sources(sources)
   is_dir <- dir.exists(inputs)
-  files <- sort(c(r_sources(sources), inputs[!is_dir],
+  files <- sort(c(inputs[!is_dir],
                   list.files(inputs[is_dir], recursive = TRUE,
                              full.names = TRUE)))
-  c(code = rlang::hash(deparse(compute, control = c("keepNA", "keepInteger",
-                                                    "niceNames"))),
+  c(code = code_hash(compute),
     args = rlang::hash(args),
+    setNames(vapply(sources, function(file) {
+      code_hash(parse(file, keep.source = FALSE))
+    }, ""), sources),
     setNames(rlang::hash_file(files), files))
 }
 
