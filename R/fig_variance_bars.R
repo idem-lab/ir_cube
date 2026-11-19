@@ -107,7 +107,7 @@ region_key <- function(reference, x, label_gap = 0.12, label_size = 3.9,
   regions <- tibble(
     from = c(0, reference$estimate + gap, reference$ceiling + gap),
     to = c(reference$estimate - gap, reference$ceiling - gap, 100),
-    label = c("explained variance", "unexplained variance", "bioassay noise"),
+    label = c("Explained variance", "Unexplained variance", "Bioassay noise"),
     colour = c(bar_colours[[reference$bar]], grey(0.45), grey(0.62))) %>%
     bind_cols(select(reference, -any_of(c("from", "to", "label",
                                           "colour"))) %>%
@@ -139,20 +139,20 @@ skill_key <- function(swatch_bar = "two_stage", text_size = 3.1) {
   }
   ggplot() +
     swatch(4, fill = noise_fill, colour = outline_colour, linewidth = 0.3) +
-    label(4, "bioassay noise: cannot be predicted") +
+    label(4, "Bioassay noise: cannot be predicted") +
     annotate("segment", x = 0, xend = 0.45, y = 3, yend = 3,
              colour = ceiling_colour, linetype = "dotted", linewidth = 0.55) +
-    label(3, "population mortality predicted perfectly") +
+    label(3, "Population mortality predicted perfectly") +
     swatch(2, fill = remainder_fill, colour = outline_colour,
            linewidth = 0.3) +
-    label(2, "population mortality not predicted") +
+    label(2, "Population mortality not predicted") +
     annotate("rect", xmin = 0, xmax = 0.45, ymin = 0.7, ymax = 1,
              fill = bar_colours[[swatch_bar]]) +
     annotate("rect", xmin = 0, xmax = 0.45, ymin = 1, ymax = 1.3,
              fill = bar_colours[[swatch_bar]], alpha = interval_alpha) +
     annotate("segment", x = 0, xend = 0.45, y = 1, yend = 1,
              colour = "white", linewidth = 0.8) +
-    label(1, "population mortality predicted\n(estimate and 95% interval)") +
+    label(1, "Population mortality predicted\n(estimate and 95% interval)") +
     coord_cartesian(xlim = c(-0.3, 7), ylim = c(-0.6, 5.4), clip = "off") +
     theme_void()
 }

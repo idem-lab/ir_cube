@@ -6,6 +6,7 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/two_stage_predictions.R")
+source("R/figure_cache.R")
 
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
@@ -306,40 +307,62 @@ cell_net_use_class <- net_use_cell_lookup %>%
 stopifnot(length(cell_net_use_class) == nrow(weights_mat))
 cell_country <- data_cell_country(df)
 
-# compute the predicted susceptibility to each pyrethroid, averaged over the
-# cells in the low and high net use classes, weighted by the numbers of
-# mosquitoes tested there: draws x classes x years of the two-stage model's
-# posterior (R/two_stage_predictions.R)
-pyrethroid_draws <- lapply(setNames(nm = pyrethroids), function(type) {
-  k <- match(type, types)
-  weights <- sapply(net_use_classes, function(net_use_class) {
-    w <- weights_mat[, k] * (cell_net_use_class == net_use_class)
-    if (sum(w) > 0) w / sum(w) else w
+# The predicted susceptibility to the pyrethroids, averaged over the cells in
+# the low and high net use classes, weighted by the numbers of mosquitoes
+# tested there: the two-stage model's posterior (R/two_stage_predictions.R)
+# per pyrethroid, combined over the pyrethroids, weighted by the numbers
+# tested of each in each class (the types' draws share their dynamical draws,
+# so are combined draw by draw). The posterior mean and 95% credible interval
+# per class and year
+predict_net_classes <- function(pyrethroids, types, years, df, unique_cells,
+                                cell_country, weights_mat, cell_net_use_class,
+                                net_use_classes,
+                                pyrethroid_net_class_weights) {
+  # draws x classes x years per pyrethroid
+  pyrethroid_draws <- lapply(setNames(nm = pyrethroids), function(type) {
+    k <- match(type, types)
+    weights <- sapply(net_use_classes, function(net_use_class) {
+      w <- weights_mat[, k] * (cell_net_use_class == net_use_class)
+      if (sum(w) > 0) w / sum(w) else w
+    })
+    setup <- two_stage_setup(type, years, df)
+    two_stage_weighted_draws(setup, unique_cells, cell_country,
+                             weights)$two_stage
   })
-  setup <- two_stage_setup(type, years_predict, df)
-  two_stage_weighted_draws(setup, unique_cells, cell_country,
-                           weights)$two_stage
-})
+  bind_rows(
+    lapply(net_use_classes, function(net_use_class) {
+      susc <- Reduce(`+`, lapply(pyrethroids, function(type) {
+        k <- match(type, types)
+        pyrethroid_net_class_weights[k, net_use_class] *
+          pyrethroid_draws[[type]][, net_use_class, ]
+      }))
+      tibble(
+        net_use_class = net_use_class,
+        year = years,
+        susc_pop_mean = colMeans(susc),
+        susc_pop_lower = apply(susc, 2, quantile, 0.025),
+        susc_pop_upper = apply(susc, 2, quantile, 0.975)
+      )
+    })
+  )
+}
 
-# combine over the pyrethroids, weighted by the numbers tested of each in each
-# class; the types' draws share their dynamical draws, so are combined draw by
-# draw. Then the posterior mean and 95% credible interval
-pop_mort_sry_net_class <- bind_rows(
-  lapply(net_use_classes, function(net_use_class) {
-    susc <- Reduce(`+`, lapply(pyrethroids, function(type) {
-      k <- match(type, types)
-      pyrethroid_net_class_weights[k, net_use_class] *
-        pyrethroid_draws[[type]][, net_use_class, ]
-    }))
-    tibble(
-      net_use_class = net_use_class,
-      year = years_predict,
-      susc_pop_mean = colMeans(susc),
-      susc_pop_lower = apply(susc, 2, quantile, 0.025),
-      susc_pop_upper = apply(susc, 2, quantile, 0.975)
-    )
-  })
+pop_mort_sry_net_class <- cached_figure_data(
+  "temporary/fig_temporal_preds_net_use.rds", predict_net_classes,
+  args = list(pyrethroids = pyrethroids, types = types, years = years_predict,
+              df = df, unique_cells = unique_cells,
+              cell_country = cell_country, weights_mat = weights_mat,
+              cell_net_use_class = cell_net_use_class,
+              net_use_classes = net_use_classes,
+              pyrethroid_net_class_weights = pyrethroid_net_class_weights),
+  sources = c("R/packages.R", "R/functions.R", "R/bioassay_subset.R",
+              "R/two_stage_predictions.R"),
+  inputs = two_stage_figure_inputs(pyrethroids)
 )
+
+# the two ribbons, labelled in the legend
+band_labels <- c(nets = "LLIN use (interquartile\nrange over bioassay pixels)",
+                 mortality = "Mortality (95%\ncredible interval)")
 
 net_class_fig <- pyrethroid_net_class_points %>%
   ggplot(
@@ -352,20 +375,19 @@ net_class_fig <- pyrethroid_net_class_points %>%
       x = year,
       ymax = upper,
       ymin = lower,
-      group = net_use_class
+      group = net_use_class,
+      fill = band_labels[["nets"]]
     ),
     data = df_net_use,
-    fill = grey(0.9),
     colour = grey(0.7)
   ) +
   geom_ribbon(
     aes(
       ymax = susc_pop_upper,
       ymin = susc_pop_lower,
-      fill = insecticide
+      fill = band_labels[["mortality"]]
     ),
-    data = pop_mort_sry_net_class,
-    fill = pyrethroid_blue
+    data = pop_mort_sry_net_class
   ) +
   # geom_point(
   #   aes(
@@ -386,24 +408,35 @@ net_class_fig <- pyrethroid_net_class_points %>%
   ) +
   facet_wrap(~net_use_class) +
   guides(
-    size = "none"
+    size = guide_legend(title = "Effective\nsamples"),
+    fill = guide_legend(title = NULL, ncol = 1, order = 1)
+  ) +
+  scale_fill_manual(
+    values = setNames(c(grey(0.9), pyrethroid_blue), band_labels)
   ) +
   scale_y_continuous(
     labels = scales::percent,
     sec.axis = sec_axis(
       ~.,
-      name = "LLIN use (grey)",
+      name = "LLIN use",
       labels = scales::percent,
     )
   ) +
-  scale_size_area() +
+  scale_size_area(
+    labels = scales::number_format(big.mark = ",")
+  ) +
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
   xlab("") +
-  ylab("Susceptibility to pyrethroids") +
+  ylab("Mortality in pyrethroid bioassays") +
   coord_cartesian(xlim = c(2000, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +
   theme(
-    strip.text.x = element_text(hjust = 0)
+    strip.text.x = element_text(hjust = 0),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.key.spacing.y = unit(4, "pt"),
+    panel.spacing.x = unit(12, "pt")
   )
 
 net_class_fig
@@ -411,5 +444,5 @@ net_class_fig
 ggsave("figures/all_africa_net_use_pred_data.png",
        bg = "white",
        scale = 0.8,
-       width = 8,
-       height = 4)
+       width = 10,
+       height = 4.8)

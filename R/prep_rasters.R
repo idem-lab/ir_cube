@@ -237,11 +237,16 @@ terra::writeRaster(log_pop_all[[paste0("log_pop_", 2025:2030)]],
 # following mac terminal command (from inside data/raw):
 # ln -s ~/Dropbox/sharing/ir_pred_rasters ./
 
-# load crops, both as-is and standardised to 0-1
+# load crops, both as-is and standardised to 0-1. These are MapSPAM 2010 crop
+# production (tonnes per 10 km SPAM cell, not yield), resampled to this 5 km
+# grid without rescaling: their sums over Africa are about four times
+# FAOSTAT's 2010 production for maize, cassava, rice and cotton alike. The
+# layers are scaled by their maximum below, so only relative production
+# matters
 crops <- rast("data/raw/ir_pred_rasters/crop_2010.tif")
 
 
-# create layers for total yield of crop groups
+# create layers for total production of crop groups
 cereals <- c("wheat", "rice", "maize", "barley", "pearl millet", "small millet",
              "sorghum", "other cereals")
 
@@ -273,7 +278,7 @@ crop_info <- geodata::spamCrops() %>%
     )
   )
 
-# compute and standardise the yield of all crops
+# compute and standardise the production of all crops
 crops_group <- app(crops, sum)
 crops_group <- crops_group / global(crops_group, "max", na.rm = TRUE)[1, 1]
 names(crops_group) <- "all crops"

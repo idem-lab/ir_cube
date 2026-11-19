@@ -1,7 +1,8 @@
 # Figures summarising out-of-sample posterior predictive performance (#10).
 #
-# Reads only the tables written by validation_metrics.R, so figures can be
-# redrawn without refitting or rescoring anything.
+# Reads only the tables written by validation_metrics.R and
+# in_sample_calibration.R, so figures can be redrawn without refitting or
+# rescoring anything.
 #
 # The main figure leads with the two questions a reader can check without any
 # distributional vocabulary: when the model said there was a 95% chance, how
@@ -29,27 +30,27 @@ by_fold <- read.csv("outputs/cv_by_fold.csv", encoding = "UTF-8")
 
 # The nearest neighbour null is the practice baseline a person would actually
 # apply: one neighbour, the most recent two available years.
-model_labels <- c(dynamical = "dynamical model",
-                  two_stage = "two-stage model",
-                  nearest_neighbour = "nearest neighbour",
-                  intercept = "insecticide mean")
-model_colours <- c("dynamical model" = "#2166AC",
-                   "two-stage model" = "#C51B7D",
-                   "nearest neighbour" = "#B2182B",
-                   "insecticide mean" = grey(0.55))
+model_labels <- c(dynamical = "Dynamical model",
+                  two_stage = "Two-stage model",
+                  nearest_neighbour = "Nearest neighbour",
+                  intercept = "Insecticide mean")
+model_colours <- c("Dynamical model" = "#2166AC",
+                   "Two-stage model" = "#C51B7D",
+                   "Nearest neighbour" = "#B2182B",
+                   "Insecticide mean" = grey(0.55))
 
 # The forecasting experiment is one per origin, since pooling a 2014 forecast
 # with a 2018 one would average over holdout windows whose true rates of decline
 # differ by a factor of two. Origins are labelled by their cut year and ordered
 # after the spatial experiments, earliest first.
-experiment_labels <- c(spatial_interpolation = "spatial interpolation",
-                       spatial_blocks = "spatial extrapolation")
+experiment_labels <- c(spatial_interpolation = "Spatial interpolation",
+                       spatial_blocks = "Spatial extrapolation")
 
 label_experiments <- function(experiment) {
   cut_year <- sub("^temporal_forecasting_", "", experiment)
   is_forecast <- cut_year != experiment
   out <- ifelse(is_forecast,
-                paste("forecast from", cut_year),
+                paste("Forecast from", cut_year),
                 experiment_labels[experiment])
   forecast_levels <- unique(out[is_forecast])
   forecast_levels <- forecast_levels[order(forecast_levels)]
@@ -67,30 +68,62 @@ tidy_labels <- function(data) {
 
 # main figure --------------------------------------------------------------
 
-coverage_plot <- coverage %>%
-  tidy_labels() %>%
+# The models the figure shows: the insecticide mean is left to the table. The
+# two-stage model is drawn last and widest, so it is the one read first; the
+# legend lists it first
+figure_models <- c("Two-stage model", "Dynamical model", "Nearest neighbour")
+figure_data <- function(data) {
+  data %>%
+    tidy_labels() %>%
+    filter(model %in% figure_models) %>%
+    mutate(model = factor(model, levels = rev(figure_models)))
+}
+model_widths <- c("Two-stage model" = 1.2, "Dynamical model" = 0.6,
+                  "Nearest neighbour" = 0.6)
+
+# in-sample coverage (R/in_sample_calibration.R), at the modelled bioassays
+# of the full fit, beside each held-out curve
+in_sample <- read.csv("outputs/in_sample_coverage.csv") %>%
+  select(-experiment) %>%
+  mutate(model = factor(model_labels[model], levels = rev(figure_models)))
+coverage_lines <- bind_rows(
+  figure_data(coverage) %>% mutate(bioassays = "Held out"),
+  tidyr::crossing(experiment = unique(figure_data(coverage)$experiment),
+                  in_sample) %>%
+    mutate(bioassays = "In sample (full fit)")
+)
+
+coverage_plot <- coverage_lines %>%
   ggplot(
     aes(x = nominal,
         y = empirical,
-        colour = model)
+        colour = model,
+        linewidth = model,
+        linetype = bioassays)
   ) +
   geom_abline(intercept = 0, slope = 1, linetype = 2, colour = grey(0.6)) +
-  geom_line(linewidth = 0.8) +
+  geom_line() +
   facet_wrap(~ experiment, nrow = 1) +
-  scale_colour_manual(values = model_colours, name = "") +
-  scale_x_continuous(labels = scales::percent) +
+  scale_colour_manual(values = model_colours, breaks = figure_models,
+                      name = "") +
+  scale_linewidth_manual(values = model_widths, breaks = figure_models,
+                         name = "") +
+  scale_linetype_manual(values = c("Held out" = 1,
+                                   "In sample (full fit)" = 3),
+                        name = "") +
+  scale_x_continuous(labels = scales::percent, breaks = c(0, 0.5, 1)) +
   scale_y_continuous(labels = scales::percent) +
   coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
   labs(
-    x = "stated chance of covering the result",
-    y = "how often it did",
-    subtitle = "Are the uncertainty ranges the right width? A well calibrated model follows the dashed line"
+    x = "Nominal coverage of the central predictive interval",
+    y = "Observed coverage",
+    subtitle = "Coverage of central predictive intervals"
   ) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
 reliability_plot <- reliability %>%
-  tidy_labels() %>%
+  figure_data() %>%
   ggplot(
     aes(x = predicted,
         y = observed,
@@ -102,34 +135,36 @@ reliability_plot <- reliability %>%
   # noise, overdispersion, posterior uncertainty and the bin size are all in it
   geom_ribbon(
     aes(ymin = predicted + ppc_lower,
-        ymax = predicted + ppc_upper),
+        ymax = predicted + ppc_upper,
+        group = model),
     fill = grey(0.85),
     colour = NA,
     alpha = 0.6
   ) +
   geom_abline(intercept = 0, slope = 1, linetype = 2, colour = grey(0.6)) +
   geom_point(size = 1.6) +
-  geom_line(linewidth = 0.5, alpha = 0.7) +
+  geom_line(aes(linewidth = model), alpha = 0.7) +
   facet_wrap(~ experiment, nrow = 1) +
-  scale_colour_manual(values = model_colours, name = "") +
+  scale_colour_manual(values = model_colours, breaks = figure_models,
+                      name = "") +
+  scale_linewidth_manual(values = model_widths * 0.7, breaks = figure_models,
+                         name = "") +
+  scale_x_continuous(breaks = c(0, 0.5, 1)) +
   coord_equal() +
-  guides(colour = "none") +
+  guides(colour = "none", linewidth = "none") +
   labs(
-    x = "predicted mortality (map)",
-    y = "observed mortality",
-    subtitle = "When the model predicts a mortality, is that the average outcome? Grey band is the scatter a correct model would still show"
+    x = "Predicted mortality (map), mean in each tenth of predictions",
+    y = "Observed mortality, mean",
+    subtitle = "Observed against predicted mortality of held-out bioassays"
   ) +
   theme_minimal() +
   theme(legend.position = "none")
 
 main_figure <- coverage_plot / reliability_plot +
   plot_layout(guides = "collect") +
-  plot_annotation(
-    title = "Out-of-sample predictive performance",
-    subtitle = "held-out bioassays, three cross-validation experiments",
-    tag_levels = "a"
-  ) &
-  theme(legend.position = "bottom")
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom",
+        panel.spacing.x = unit(1, "lines"))
 
 ggsave("figures/CV_predictive_calibration.png",
        main_figure,
@@ -183,7 +218,7 @@ rho_plot <- rho_comparison %>%
         shape = insecticide_class)
   ) +
   geom_abline(intercept = 0, slope = 1, linetype = 2, colour = grey(0.6)) +
-  geom_point(size = 3, colour = model_colours[["dynamical model"]]) +
+  geom_point(size = 3, colour = model_colours[["Dynamical model"]]) +
   facet_wrap(~ experiment, nrow = 1) +
   scale_shape_discrete(name = "") +
   coord_equal() +

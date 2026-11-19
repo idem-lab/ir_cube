@@ -515,8 +515,8 @@ diverging_scale <- function(name, limit) {
 }
 
 # panels in rows of four with the legend in the last slot, or in ncol columns
-# with the legend at the side
-year_panels <- function(raster, fill_scale, title, subtitle, file,
+# with the legend at the side; no subtitle if it is NULL
+year_panels <- function(raster, fill_scale, title, subtitle = NULL, file,
                         ncol = NULL) {
   years_list <- lapply(seq_len(nlyr(raster)), function(i) {
     ggplot() +
@@ -535,7 +535,9 @@ year_panels <- function(raster, fill_scale, title, subtitle, file,
     patchwork::plot_layout(guides = "collect", nrow = 2, ncol = ncol) +
     patchwork::plot_annotation(
       title = title,
-      subtitle = paste(strwrap(subtitle, width = 110), collapse = "\n"))
+      subtitle = if (!is.null(subtitle)) {
+        paste(strwrap(subtitle, width = 110), collapse = "\n")
+      })
   ggsave(file, bg = "white", width = if (is.null(ncol)) 13 else 11, height = 8,
          scale = 0.8, dpi = 300)
 }
@@ -554,14 +556,13 @@ correction_limit <- ceiling(pooled_quantile("correction_mean") * 4) / 4
 difference_limit <- ceiling(pooled_quantile("difference_pp") / 5) * 5
 sd_limit <- ceiling(pooled_quantile("two_stage_sd_pp") / 5) * 5
 
-model_note <- function(type) {
-  T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf(paste("target m + omega + xi, without u, p and sy; data to %i,",
-                "later years are the AR(1) forecast of xi"), T_k)
-}
-
 # the posterior uncertainty as an SD and as n*, under both readings of u and
-# p (local_terms). The posterior mean is mapped by R/fig_ir_maps.R
+# p (local_terms). The posterior mean is mapped by R/fig_ir_maps.R. The
+# paper's maps (SD, n*_pop) are titled with the insecticide alone, as
+# R/fig_ir_maps.R's
+type_title <- function(type) {
+  if (type == "llin_effective") "LLIN pyrethroids" else type
+}
 n_star_target <- c(
   pop = paste("ilogit(m + omega + xi), u and p taken as data error: the upper",
               "bound on the map's worth"),
@@ -583,16 +584,18 @@ for (type in c(insecticides_plot, "llin_effective")) {
       binned_scale("fill", palette = function(x) {
                      RColorBrewer::brewer.pal(10, "PuOr")[-(5:6)][seq_along(x)]
                    },
-                   name = "n*<br>(bioassays)", transform = "log10",
+                   name = "Equivalent<br>number of<br>bioassays (n*)",
+                   transform = "log10",
                    breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10),
                    labels = c("0.1", "0.2", "0.5", "1", "2", "5", "10"),
                    limits = c(1e-6, 1e6), oob = scales::squish,
                    na.value = "transparent",
                    guide = guide_coloursteps(frame.colour = border_col,
                                              frame.linewidth = 0.1)),
-      title = sprintf("%s: two-stage model, uncertainty as n*_%s",
-                      if (mix) "LLIN pyrethroids" else type, reading),
-      subtitle = paste0(
+      title = if (reading == "pop") type_title(type) else
+        sprintf("%s: two-stage model, uncertainty as n*_%s",
+                type_title(type), reading),
+      subtitle = if (reading == "local") paste0(
         "n*_", reading, ": the number of independent bioassays of 100 ",
         "mosquitoes at the pixel-year",
         if (mix) ", split across the pyrethroids by weight,",
@@ -610,7 +613,9 @@ for (type in c(insecticides_plot, "llin_effective")) {
   }
 }
 
-for (type in insecticides_plot) {
+# llin_effective's SD is the weighted sum of the pyrethroids' (`map
+# llin_effective`), the largest their marginal SDs allow
+for (type in c(insecticides_plot, "llin_effective")) {
   year_panels(
     read_map(type, "two_stage_sd_pp"),
     # a coloured sequential palette, so that no SD reads as the grey of the
@@ -619,29 +624,22 @@ for (type in insecticides_plot) {
                          option = "magma", direction = -1,
                          oob = scales::squish, na.value = "transparent",
                          guide = colourbar),
-    title = sprintf("%s: two-stage model, posterior SD", type),
-    subtitle = paste("Posterior SD of susceptibility, ilogit(m + omega + xi),",
-                     "in percentage points, including the dynamical model's",
-                     "uncertainty;", model_note(type)),
+    title = type_title(type),
     file = file.path(figure_dir, sprintf("%s_two_stage_sd_map.png", type)))
+}
+
+for (type in insecticides_plot) {
 
   year_panels(
     read_map(type, "correction_mean"),
     diverging_scale("Correction<br>(logit)", correction_limit),
-    title = sprintf("%s: second-stage correction", type),
-    subtitle = paste("Posterior mean of omega + xi on the logit scale",
-                     "(+ = more susceptible than the dynamical model);",
-                     model_note(type)),
+    title = type_title(type),
     file = file.path(figure_dir, sprintf("%s_correction_map.png", type)))
 
   year_panels(
     read_map(type, "difference_pp"),
     diverging_scale("Difference<br>(% points)", difference_limit),
-    title = sprintf("%s: two-stage minus dynamical", type),
-    subtitle = paste("Difference in posterior mean susceptibility",
-                     "(including the shrinkage towards 50% from the",
-                     "correction's variance), percentage points;",
-                     model_note(type)),
+    title = type_title(type),
     file = file.path(figure_dir, sprintf("%s_difference_map.png", type)))
 }
 
@@ -662,28 +660,31 @@ ggplot() +
   # a top margin, or the title is clipped
   theme(plot.margin = unit(c(0.3, 0, 0, 0), "cm"),
         legend.ticks = element_blank()) +
-  labs(title = sprintf("Second-stage correction in %i", compare_year),
-       subtitle = "Posterior mean of omega + xi, logit scale")
+  labs(title = sprintf("Second-stage correction in %i", compare_year))
 ggsave(file.path(figure_dir,
                  sprintf("correction_all_types_%i.png", compare_year)),
        bg = "white", width = 10, height = 10, scale = 0.8, dpi = 300)
 
-# fitted hyperparameters per type
-hyperparameters %>%
-  select(insecticide_type,
-         `omega range (km)` = range_omega, `omega SD` = sigma_omega,
-         `eta range (km)` = range_eta, `eta SD` = sigma_eta, phi = phi,
-         tau = tau, sigma_p = sigma_p, sigma_sy = sigma_sy) %>%
-  pivot_longer(-insecticide_type) %>%
-  mutate(name = factor(name, levels = unique(name)),
+# fitted hyperparameters per type: the posterior mean and 95% interval
+# (fit_hyper_intervals())
+source("R/two_stage_correction.R")
+hyper_symbols <- c(range_omega = "omega~range~(km)", sigma_omega = "sigma[omega]",
+                   range_eta = "eta~range~(km)", sigma_eta = "sigma[eta]",
+                   phi = "phi", tau = "tau", sigma_p = "sigma[p]",
+                   sigma_sy = "sigma[sy]")
+bind_rows(lapply(insecticides_plot, function(type) {
+  fit <- readRDS(file.path(type_dir(type), "fit.rds"))
+  mutate(fit_hyper_intervals(fit), insecticide_type = type)
+})) %>%
+  mutate(name = factor(hyper_symbols[hyperparameter], levels = hyper_symbols),
          insecticide_type = factor(insecticide_type,
                                    levels = rev(insecticides_plot))) %>%
-  ggplot(aes(x = value, y = insecticide_type, colour = insecticide_type)) +
-  geom_point(size = 2) +
-  facet_wrap(~name, scales = "free_x", nrow = 1) +
+  ggplot(aes(x = mean, xmin = lower, xmax = upper, y = insecticide_type,
+             colour = insecticide_type)) +
+  geom_pointrange(size = 0.4, linewidth = 0.6) +
+  facet_wrap(~name, scales = "free_x", nrow = 1, labeller = label_parsed) +
   scale_colour_manual(values = insecticides_col, guide = "none") +
-  labs(x = NULL, y = NULL,
-       title = "Second-stage hyperparameters, final model, fitted to all data") +
+  labs(x = "Posterior mean and 95% interval", y = NULL) +
   theme_minimal()
 ggsave(file.path(figure_dir, "map_hyperparameters.png"),
        bg = "white", width = 14, height = 3.5, dpi = 200)

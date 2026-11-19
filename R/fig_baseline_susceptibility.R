@@ -80,7 +80,7 @@ plot_initial <- function(raster, file) {
     scale_fill_gradient(
       labels = scales::percent,
       high = "palegreen",
-      name = "Initial\nsusceptibility",
+      name = "Initial\nmortality",
       limits = c(0.5, 1),
       oob = scales::squish,
       na.value = "transparent") +

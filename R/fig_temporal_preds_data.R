@@ -15,6 +15,7 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/two_stage_predictions.R")
+source("R/figure_cache.R")
 
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
@@ -96,31 +97,6 @@ cell_region <- df_sub %>%
   pull(region)
 cell_country <- data_cell_country(df)
 
-# for each insecticide, the weights renormalised within each region (all zero
-# where a region has no data for it), and draws x (Africa, regions) x years of
-# the weighted average susceptibility
-regions <- unique(df_sub$region)
-type_draws <- lapply(seq_along(types), function(k) {
-  regional <- sapply(regions, function(region) {
-    w <- weights_mat[, k] * (cell_region == region)
-    if (sum(w) > 0) w / sum(w) else w
-  })
-  weights <- cbind(Africa = weights_mat[, k], regional)
-  setup <- two_stage_setup(types[k], years_predict, df)
-  two_stage_weighted_draws(setup, unique_cells, cell_country,
-                           weights)$two_stage
-})
-
-# posterior mean and 95% credible interval of draws x years
-summarise_draws <- function(x) {
-  tibble(
-    year = years_predict,
-    susc_pop_mean = colMeans(x),
-    susc_pop_lower = apply(x, 2, quantile, 0.025),
-    susc_pop_upper = apply(x, 2, quantile, 0.975)
-  )
-}
-
 # now compute a weighted sum over the pyrethroids (weights given by the numbers
 # of mosquitoes tested for each pyrethroid, over the whole timeseries)
 pyrethroid_weights <- df_sub %>% 
@@ -140,12 +116,63 @@ pyrethroid_weights <- df_sub %>%
   arrange(type_id) %>%
   pull(weight)
 
-# posterior summaries of pyrethroid susceptibility by year; the types' draws
-# share their dynamical draws, so are combined draw by draw
-pyrethroid_susc <- Reduce(`+`, lapply(which(pyrethroid_weights > 0), function(k) {
-  pyrethroid_weights[k] * type_draws[[k]][, "Africa", ]
-}))
-pop_mort_sry_pyrethroid <- summarise_draws(pyrethroid_susc)
+# The two-stage model's posterior (R/two_stage_predictions.R) of the weighted
+# average susceptibility over the locations with bioassays of each
+# insecticide, Africa-wide and per region (the weights renormalised within
+# each region; all zero where a region has no data for it), and of the LLIN
+# pyrethroids combined, weighted by the numbers tested of each (the types'
+# draws share their dynamical draws, so are combined draw by draw): the
+# posterior mean and 95% credible interval per year
+predict_areas <- function(types, years, df, unique_cells, cell_country,
+                          weights_mat, cell_region, regions,
+                          pyrethroid_weights) {
+  summarise_draws <- function(x) {
+    tibble(
+      year = years,
+      susc_pop_mean = colMeans(x),
+      susc_pop_lower = apply(x, 2, quantile, 0.025),
+      susc_pop_upper = apply(x, 2, quantile, 0.975)
+    )
+  }
+  # draws x (Africa, regions) x years, per insecticide
+  type_draws <- lapply(seq_along(types), function(k) {
+    regional <- sapply(regions, function(region) {
+      w <- weights_mat[, k] * (cell_region == region)
+      if (sum(w) > 0) w / sum(w) else w
+    })
+    weights <- cbind(Africa = weights_mat[, k], regional)
+    setup <- two_stage_setup(types[k], years, df)
+    two_stage_weighted_draws(setup, unique_cells, cell_country,
+                             weights)$two_stage
+  })
+  pyrethroid_susc <- Reduce(`+`, lapply(which(pyrethroid_weights > 0),
+                                        function(k) {
+    pyrethroid_weights[k] * type_draws[[k]][, "Africa", ]
+  }))
+  list(
+    pyrethroid = summarise_draws(pyrethroid_susc),
+    areas = bind_rows(lapply(seq_along(types), function(k) {
+      bind_rows(lapply(c("Africa", regions), function(area) {
+        summarise_draws(type_draws[[k]][, area, ]) %>%
+          mutate(area = area)
+      })) %>%
+        mutate(insecticide = types[k])
+    }))
+  )
+}
+
+regions <- unique(df_sub$region)
+predictions <- cached_figure_data(
+  "temporary/fig_temporal_preds_data.rds", predict_areas,
+  args = list(types = types, years = years_predict, df = df,
+              unique_cells = unique_cells, cell_country = cell_country,
+              weights_mat = weights_mat, cell_region = cell_region,
+              regions = regions, pyrethroid_weights = pyrethroid_weights),
+  sources = c("R/packages.R", "R/functions.R", "R/bioassay_subset.R",
+              "R/two_stage_predictions.R"),
+  inputs = two_stage_figure_inputs(types)
+)
+pop_mort_sry_pyrethroid <- predictions$pyrethroid
 
 insecticides_plot <- tibble(
   insecticide = types,
@@ -186,12 +213,9 @@ insecticides_plot_lookup <- tibble(
   select(-idx, -suffix)
 
 # summarise posteriors of plots against all insecticides
-pop_mort_sry <- bind_rows(
-  lapply(seq_along(types), function(k) {
-    summarise_draws(type_draws[[k]][, "Africa", ]) %>%
-      mutate(insecticide = types[k])
-  })
-) %>%
+pop_mort_sry <- predictions$areas %>%
+  filter(area == "Africa") %>%
+  select(-area) %>%
   filter(
     insecticide %in% insecticides_plot
   ) %>%
@@ -374,7 +398,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
     data = pop_mort_sry_pyrethroid,
     fill = pyrethroid_blue,
     colour = pyrethroid_blue,
-    size = line_size,
+    linewidth = line_size,
     lineend = "round"
   ) +
   geom_point(
@@ -397,7 +421,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
     limits = size_limits
   ) +
   xlab("") +
-  ylab("Susceptibility") +
+  ylab("Mortality") +
   coord_cartesian(xlim = c(1995, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +
@@ -418,7 +442,7 @@ all_insecticides_fig <- pop_mort_sry %>%
       ymax = susc_pop_upper,
       ymin = susc_pop_lower,
     ),
-    size = line_size
+    linewidth = line_size
   ) +
   geom_point(
     data = df_overall_plot,
@@ -571,17 +595,9 @@ df_region_overall_plot <- df_sub %>%
   )
 
 # summarise the regional predictions
-region_pop_mort_sry <- bind_rows(
-  lapply(seq_along(types), function(k) {
-    bind_rows(
-      lapply(regions, function(region) {
-        summarise_draws(type_draws[[k]][, region, ]) %>%
-          mutate(region = region)
-      })
-    ) %>%
-      mutate(insecticide = types[k])
-  })
-) %>%
+region_pop_mort_sry <- predictions$areas %>%
+  filter(area != "Africa") %>%
+  rename(region = area) %>%
   # drop out the predictions that are all zero (zero weights)
   group_by(region,
            insecticide,
@@ -614,7 +630,7 @@ region_all <- region_pop_mort_sry %>%
       fill = region,
     ),
     colour = grey(0.2),
-    size = 0.1
+    linewidth = 0.1
   ) +
   facet_wrap(~insecticide_type_label_2,
              ncol = 3) +
@@ -623,9 +639,9 @@ region_all <- region_pop_mort_sry %>%
   ) +
   scale_y_continuous(
     labels = scales::percent,
-    breaks = c(0, 1),
+    breaks = c(0, 0.5, 1),
     limits = c(0, 1)) +
-  scale_x_continuous(breaks = c(2000, 2020)) +
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
   scale_size_area(
     labels = scales::number_format(
       accuracy = 100,
@@ -638,13 +654,13 @@ region_all <- region_pop_mort_sry %>%
     palette = "Accent"
   ) +
   xlab("") +
-  # suppress ylab, as it is on the other panel
-  ylab("") +
+  ylab("Mortality") +
   coord_cartesian(xlim = c(1995, 2024)) +
   guides(
     fill = guide_legend(title = "")
   ) +
-  theme_minimal() +
+  # smaller text than the default, to fit more axis labels
+  theme_minimal(base_size = 9) +
   theme(
     strip.text.x = element_text(hjust = 0)
   )
