@@ -61,7 +61,7 @@ df <- ir_africa %>%
 # This previously fitted a single rho to the six most sampled cell-year-type
 # combinations, with a free fraction per combination. Two problems with using
 # that for the validation noise floor. It used 81 assays where the whole
-# replicated set has 9,420, and a single rho is badly misspecified: fitted
+# replicated set has 5,014, and a single rho is badly misspecified: fitted
 # separately (before the study-year effect), the nine insecticide types range
 # from 0.093 (Lambda-cyhalothrin) to 0.256 (Alpha-cypermethrin), and
 # heterogeneity *within* the pyrethroids (I2 = 97%) exceeds that between
@@ -84,7 +84,7 @@ df <- ir_africa %>%
 # the incidental parameters problem that joint maximisation over one p_g per
 # group would: most groups hold only two assays. Partial pooling across types
 # shares strength toward the thinly sampled ones - Pirimiphos-methyl and
-# Malathion have about 100 groups each, against 1,157 for Deltamethrin.
+# Malathion have 91 and 55 groups, against 692 for Deltamethrin.
 #
 # Every replicated group is used, not just the six plotted below.
 # restricted to the nine insecticides the model covers: `df` here carries all
