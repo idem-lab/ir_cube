@@ -1,47 +1,54 @@
-# Hierarchical linear trend in agricultural insecticide use intensity, from
-# FAOSTAT, to set the relative regional scales of the time trend g_ag(t) on the
-# crop-layer selection covariates.
+# The trend in agricultural insecticide use intensity, from FAOSTAT: whether a
+# linear trend common to all regions is adequate for the trend g_ag(t) on the
+# crop-layer selection covariates (R/model_covariates.R), which is linear and
+# the same in every region.
 #
-# Response: log kg insecticide (FAOSTAT item 1309, a.i.) per ha cropland,
-# 1995-2024, for the modelled countries. Cropland is implied by FAOSTAT's own
-# pesticides total and pesticides total per ha of cropland. Official (A) and
-# estimated (E, X) values are used; imputed (I) values, which are carry-forwards
-# and straight-line interpolations, are dropped, as are zeros.
+# Response: log kg insecticide (FAOSTAT item 1309, active ingredient) per ha
+# cropland, 1995-2024, for the modelled countries. Cropland is implied by
+# FAOSTAT's own pesticides total and pesticides total per ha of cropland.
+# Imputed (I) values, which are carry-forwards and straight-line
+# interpolations, are dropped, as are zeros.
 #
-#   y_i = a_c + (b + beta_r + delta_c) * t_i + e_i
-#   a_c     ~ N(alpha, sigma_a)        country intercepts
-#   beta_r  ~ N(0, sigma_beta)         regional slope deviations
-#   delta_c ~ N(0, sigma_delta)        country slope deviations
-#   e_i     ~ Student-t(nu, 0, s_official or s_estimated)
+# Two data sets: the values reported by the countries (flag A), the main
+# analysis, and those with FAO's estimates (flags E and X) added. FAO's
+# estimates for non-reporting countries are mostly net trade (imports less
+# exports) converted to active ingredient with global factors (FAO Statistics
+# Working Paper 24-45), and are much smoother than the reported values.
 #
-# with t the year centred on 2009.5, in decades. The regional slope is
-# b + beta_r.
+# Linear mixed models, fitted by maximum likelihood (nlme):
 #
-# Seven countries (Benin, DR Congo, Eswatini, Gabon, Liberia, Nigeria, Sierra
-# Leone) have estimated insecticide use that is their net-trade pesticides
-# total times one common insecticide share, so their E values carry no
-# country information on the insecticide share. They are kept in the main fit,
-# and dropped in a sensitivity fit, along with a fit to official values only.
+#   y_ct = alpha + b t + a_c + d_c t + e_ct
+#   a_c, d_c   country intercept and slope deviations, independent normals
+#   e_ct       continuous-time AR(1) within each country (corCAR1), with its
+#              own variance for estimated values when they are included
 #
-# Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1):
-#   R_LIBS=~/R/greta06-lib \
-#   RETICULATE_PYTHON=~/.local/share/r-miniconda/envs/greta06-env/bin/python \
+# with t the year centred on 2009.5, in decades. Two tests, each of nested
+# fixed effects with the same random effects and correlation, so a likelihood
+# ratio test (and AIC) of the ML fits is valid:
+#   non-linearity       + q t^2 against the linear model;
+#   regional variation  + region x t against + region (regional intercepts in
+#                       both, so only the slopes are tested).
+#
+# For the supplement: "In the country-reported FAOSTAT data, allowing for
+# serial correlation within countries, neither a quadratic term (p = 0.33) nor
+# region-specific slopes (p = 0.31) improved the fit, so we assume a common
+# linear trend." The log prints what reporting the tests needs: per data set,
+# the numbers of values and countries, the linear model's estimates with 95%
+# intervals (fixed effects, random-effect SDs, AR(1) correlation, residual
+# SDs), the quadratic coefficient with its 95% interval, each test's log
+# likelihoods, numbers of parameters, AIC, likelihood ratio statistic, degrees
+# of freedom and p value, and the regional slopes with 95% intervals.
+#
 #   Rscript R/faostat_trend_model.R
 # Needs data/clean/faostat_pesticide_use.RDS from R/prep_faostat.R.
 
-source("R/greta_setup.R")
-start_greta(threads = 2)
 source("R/packages.R")
 source("R/functions.R")
-
-set.seed(2025)
+library(nlme)
 
 first_year <- 1995
 last_year <- 2024
 centre_year <- (first_year + last_year) / 2
-n_samples <- 3000
-warmup <- 3000
-n_chains <- 4
 
 regions <- sort(unique(country_region_lookup()$region))
 
@@ -62,32 +69,12 @@ cropland <- use %>%
             cropland_ha = `Agricultural Use` * 1000 /
               `Use per area of cropland`)
 
-# countries whose estimated insecticide share is the common one: their E share
-# series matches Nigeria's (to 0.005) in at least 90% of years
-shares <- use %>%
-  filter(item_code %in% c("1309", "1357"), element == "Agricultural Use") %>%
-  select(country_name, year, item_code, value, flag) %>%
-  pivot_wider(names_from = item_code, values_from = c(value, flag)) %>%
-  filter(flag_1309 == "E") %>%
-  mutate(share = value_1309 / value_1357)
-common_share_countries <- shares %>%
-  left_join(shares %>%
-              filter(country_name == "Nigeria") %>%
-              select(year, share_common = share),
-            by = join_by(year)) %>%
-  group_by(country_name) %>%
-  summarise(match = mean(abs(share - share_common) < 0.005, na.rm = TRUE)) %>%
-  filter(match >= 0.9) %>%
-  pull(country_name)
-
 insecticide <- use %>%
   filter(item_code == "1309", element == "Agricultural Use",
          between(year, first_year, last_year)) %>%
   left_join(cropland, by = join_by(country_name, year)) %>%
   mutate(kg_per_ha = value * 1000 / cropland_ha,
-         official = flag == "A",
-         common_share = country_name %in% common_share_countries &
-           flag == "E")
+         official = flag == "A")
 
 n_zero <- sum(insecticide$flag %in% c("A", "E", "X") &
                 insecticide$kg_per_ha <= 0, na.rm = TRUE)
@@ -97,295 +84,180 @@ trend_data <- insecticide %>%
          is.finite(kg_per_ha), kg_per_ha > 0) %>%
   mutate(y = log(kg_per_ha),
          t = (year - centre_year) / 10) %>%
-  select(country_name, region, year, t, y, flag, official, common_share)
+  select(country_name, region, year, t, y, flag, official)
 
-# model -----------------------------------------------------------------------
+# models ----------------------------------------------------------------------
 
-# build the model for one data set; returns the greta model and the arrays to
-# summarise
-build_trend_model <- function(data) {
-  countries <- sort(unique(data$country_name))
-  country_region <- data %>%
-    distinct(country_name, region) %>%
-    arrange(match(country_name, countries))
-  stopifnot(identical(country_region$country_name, countries))
-  n_country <- length(countries)
-  n_region <- length(regions)
-  country_id <- match(data$country_name, countries)
-  region_of_country <- match(country_region$region, regions)
+datasets <- list(reported = filter(trend_data, official),
+                 all = trend_data)
 
-  alpha <- normal(-3, 2)
-  b <- normal(0, 1)
-  sigma_a <- normal(0, 2, truncation = c(0, Inf))
-  sigma_beta <- normal(0, 0.5, truncation = c(0, Inf))
-  sigma_delta <- normal(0, 0.5, truncation = c(0, Inf))
-  # country effects centred (each country has many values, and the
-  # non-centred form mixed poorly for alpha and b); regional deviations
-  # non-centred (five regions)
-  a <- normal(alpha, sigma_a, dim = n_country)
-  delta <- normal(0, sigma_delta, dim = n_country)
-  beta_raw <- normal(0, 1, dim = n_region)
-  beta <- sigma_beta * beta_raw
-  region_slope <- b + beta
-
-  # one scale per value type, the estimated one only if there are E values
-  s_official <- normal(0, 1, truncation = c(0, Inf))
-  if (all(data$official)) {
-    s_obs <- s_official[rep(1, nrow(data))]
-    s_estimated <- s_official
-  } else {
-    s_estimated <- normal(0, 1, truncation = c(0, Inf))
-    s <- c(s_official, s_estimated)
-    s_obs <- s[ifelse(data$official, 1, 2)]
+fit_trend <- function(fixed, data) {
+  data <- as.data.frame(data)
+  weights <- if (n_distinct(data$official) > 1) {
+    varIdent(form = ~ 1 | official)
   }
-  nu <- gamma(2, 0.1)
-
-  country_slope <- region_slope[region_of_country] + delta
-  mu <- a[country_id] + country_slope[country_id] * data$t
-  distribution(data$y) <- student(nu, mu, s_obs)
-
-  list(
-    model = model(alpha, b, sigma_a, sigma_beta, sigma_delta,
-                  s_official, s_estimated, nu),
-    arrays = list(b = b, region_slope = region_slope, a = a,
-                  country_slope = country_slope, mu = mu, s_obs = s_obs,
-                  nu = nu, s_official = s_official, s_estimated = s_estimated,
-                  sigma_beta = sigma_beta, sigma_delta = sigma_delta),
-    countries = countries,
-    region_of_country = region_of_country
-  )
+  lme(fixed, random = list(country_name = pdDiag(~ t)), data = data,
+      correlation = corCAR1(form = ~ year | country_name),
+      weights = weights, method = "ML",
+      control = lmeControl(maxIter = 500, msMaxIter = 500, opt = "optim"))
 }
 
-fit_trend_model <- function(data) {
-  built <- build_trend_model(data)
-  draws <- mcmc(built$model, n_samples = n_samples, warmup = warmup,
-                chains = n_chains, verbose = FALSE)
-  rhat <- coda::gelman.diag(draws, multivariate = FALSE)$psrf[, 1]
-  ess <- coda::effectiveSize(draws)
-  # posterior draws of each array, as a draws x elements matrix
-  sims <- lapply(built$arrays, function(x) {
-    as.matrix(calculate(x, values = draws))
-  })
-  list(data = data, built = built, draws = draws, sims = sims,
-       max_rhat = max(rhat), min_ess = min(ess),
-       worst = names(sort(rhat, decreasing = TRUE))[1:3])
+fits <- lapply(datasets, function(data) {
+  list(linear = fit_trend(y ~ t, data),
+       quadratic = fit_trend(y ~ t + I(t ^ 2), data),
+       regional_level = fit_trend(y ~ t + region, data),
+       regional_slope = fit_trend(y ~ t * region, data))
+})
+
+# lag-1 autocorrelation of a fit's normalised residuals within countries, in
+# consecutive years: near 0 if the AR(1) term captures the serial correlation
+residual_lag1 <- function(fit, data) {
+  tibble(country_name = data$country_name, year = data$year,
+         r = residuals(fit, type = "normalized")) %>%
+    arrange(country_name, year) %>%
+    group_by(country_name) %>%
+    mutate(r_lag = if_else(lag(year) == year - 1, lag(r), NA_real_)) %>%
+    ungroup() %>%
+    summarise(lag1 = cor(r, r_lag, use = "complete.obs")) %>%
+    pull(lag1)
 }
 
-fits <- list(
-  main = trend_data,
-  official_only = filter(trend_data, official),
-  no_common_share = filter(trend_data, !common_share)
-) %>%
-  map(fit_trend_model)
-
-cat("zero values dropped:", n_zero, "\n")
-cat("common-share countries:", paste(common_share_countries, collapse = ", "),
-    "\n")
-for (name in names(fits)) {
-  cat(sprintf("%s: %d obs (%d official), %d countries, max rhat %.3f, min ess %.0f (worst: %s)\n",
-              name, nrow(fits[[name]]$data), sum(fits[[name]]$data$official),
-              length(fits[[name]]$built$countries),
-              fits[[name]]$max_rhat, fits[[name]]$min_ess,
-              paste(fits[[name]]$worst, collapse = ", ")))
+# the regional slopes (per year, on the log scale) of a fit with region x t,
+# with 95% intervals
+regional_slopes <- function(model) {
+  contrast <- t(sapply(regions, function(r) {
+    as.numeric(names(fixef(model)) %in% c("t", paste0("t:region", r)))
+  }))
+  estimate <- (contrast %*% fixef(model))[, 1]
+  se <- sqrt(rowSums((contrast %*% vcov(model)) * contrast))
+  tibble(region = regions, slope = estimate / 10,
+         lower = (estimate - qnorm(0.975) * se) / 10,
+         upper = (estimate + qnorm(0.975) * se) / 10)
 }
 
-# regional summary ------------------------------------------------------------
-
-# slopes on the log scale per year, from per decade
-slope_draws <- function(fit) {
-  s <- cbind(fit$sims$b, fit$sims$region_slope) / 10
-  colnames(s) <- c("Africa", regions)
-  s
+# a likelihood ratio test of nested ML fits, as one row
+lr_test <- function(simple, complex) {
+  ll <- c(logLik(simple), logLik(complex))
+  k <- c(attr(logLik(simple), "df"), attr(logLik(complex), "df"))
+  stat <- 2 * (ll[2] - ll[1])
+  tibble(loglik_simple = ll[1], loglik_complex = ll[2],
+         parameters_simple = k[1], parameters_complex = k[2],
+         aic_simple = AIC(simple), aic_complex = AIC(complex),
+         lr_statistic = stat, df = k[2] - k[1],
+         p = pchisq(stat, k[2] - k[1], lower.tail = FALSE))
 }
-
-span_years <- 2025 - 1995
-
-summarise_slopes <- function(fit, name) {
-  s <- slope_draws(fit)
-  ratio <- exp(s * span_years)
-  # g_ag scale relative to the continent, two ways: ratio of log-scale slopes,
-  # and ratio of the proportional increase in intensity since 1995
-  scale_log <- s / s[, "Africa"]
-  scale_increase <- (ratio - 1) / (ratio[, "Africa"] - 1)
-  # probability that the region's slope is above the continental one
-  p_above <- colMeans(s > s[, "Africa"])
-  q <- function(x, p) apply(x, 2, quantile, p)
-  data <- fit$data
-  tibble(
-    fit = name,
-    region = colnames(s),
-    n_countries = c(n_distinct(data$country_name),
-                    map_int(regions, ~ n_distinct(data$country_name[data$region == .x]))),
-    n_obs = c(nrow(data), map_int(regions, ~ sum(data$region == .x))),
-    n_official = c(sum(data$official),
-                   map_int(regions, ~ sum(data$official[data$region == .x]))),
-    slope_per_year = colMeans(s),
-    slope_lower = q(s, 0.025),
-    slope_upper = q(s, 0.975),
-    ratio_2025_1995 = apply(ratio, 2, median),
-    ratio_lower = q(ratio, 0.025),
-    ratio_upper = q(ratio, 0.975),
-    g_scale_log_slope = apply(scale_log, 2, median),
-    g_scale_increase = apply(scale_increase, 2, median),
-    g_scale_increase_lower = q(scale_increase, 0.025),
-    g_scale_increase_upper = q(scale_increase, 0.975),
-    p_slope_above_africa = if_else(region == "Africa", NA_real_, p_above)
-  )
-}
-
-regional_trend <- imap(fits, summarise_slopes) %>% bind_rows()
-
-write_csv(filter(regional_trend, fit == "main") %>% select(-fit),
-          "data/clean/faostat_regional_trend.csv")
 
 options(width = 200)
-print(regional_trend %>%
-        select(fit, region, n_obs, n_official, slope_per_year, slope_lower,
-               slope_upper, ratio_2025_1995, ratio_lower, ratio_upper,
-               g_scale_increase, p_slope_above_africa) %>%
-        mutate(across(where(is.double), ~ signif(.x, 3))),
-      n = Inf)
-
-main <- fits$main
-cat(sprintf("main: sigma_beta %.3f [%.3f, %.3f]; sigma_delta %.3f; s_official %.2f; s_estimated %.2f; nu %.1f\n",
-            mean(main$sims$sigma_beta),
-            quantile(main$sims$sigma_beta, 0.025),
-            quantile(main$sims$sigma_beta, 0.975),
-            mean(main$sims$sigma_delta), mean(main$sims$s_official),
-            mean(main$sims$s_estimated), mean(main$sims$nu)))
-
-# posterior predictive checks --------------------------------------------------
-
-ppc <- function(fit) {
-  data <- fit$data
-  mu <- fit$sims$mu
-  s <- fit$sims$s_obs
-  nu <- as.vector(fit$sims$nu)
-  n_draws <- nrow(mu)
-  y_rep <- mu + s * matrix(rt(length(mu), df = rep(nu, ncol(mu))),
-                           nrow = n_draws)
-  lower <- apply(y_rep, 2, quantile, 0.025)
-  upper <- apply(y_rep, 2, quantile, 0.975)
-  inside <- data$y >= lower & data$y <= upper
-
-  # residual lag-1 autocorrelation within country series, observed vs
-  # replicated, and the sd of residuals, by value type
-  lag1 <- function(resid) {
-    d <- tibble(country_name = data$country_name, year = data$year,
-                official = data$official, r = resid) %>%
-      arrange(country_name, year) %>%
-      group_by(country_name) %>%
-      mutate(r_lag = if_else(lag(year) == year - 1, lag(r), NA_real_)) %>%
-      ungroup()
-    d %>%
-      group_by(official) %>%
-      summarise(acf = cor(r, r_lag, use = "complete.obs"), .groups = "drop")
-  }
-  mu_mean <- colMeans(mu)
-  observed <- lag1(data$y - mu_mean)
-  replicated <- map(sample(n_draws, 200),
-                    ~ lag1(y_rep[.x, ] - mu[.x, ])) %>%
-    bind_rows() %>%
-    group_by(official) %>%
-    summarise(acf_rep_lower = quantile(acf, 0.025),
-              acf_rep_upper = quantile(acf, 0.975), .groups = "drop")
-
-  tibble(official = data$official, inside = inside,
-         resid = data$y - mu_mean,
-         rep_sd = apply(y_rep - mu, 2, sd)) %>%
-    group_by(official) %>%
-    summarise(n = n(), coverage_95 = mean(inside),
-              resid_sd = sd(resid), resid_mad = mad(resid),
-              .groups = "drop") %>%
-    left_join(observed, by = join_by(official)) %>%
-    left_join(replicated, by = join_by(official))
+cat("zero values dropped:", n_zero, "\n")
+for (name in names(fits)) {
+  data <- datasets[[name]]
+  fit <- fits[[name]]
+  slope <- summary(fit$linear)$tTable["t", ]
+  cat(sprintf(paste("\n==== %s: %i values (%i reported by countries),",
+                    "%i countries\n"),
+              name, nrow(data), sum(data$official),
+              n_distinct(data$country_name)))
+  cat("countries and values per region:\n")
+  print(data %>% group_by(region) %>%
+          summarise(countries = n_distinct(country_name), values = n()))
+  cat("\nlinear model (t in decades from 2009.5; y the log of kg per ha):",
+      "estimates with 95% intervals\n")
+  print(intervals(fit$linear, which = "all"))
+  cat(sprintf(paste("trend %.3f (95%% interval %.3f to %.3f) per year on the",
+                    "log scale, so 2025 use is %.2f times 1995's;",
+                    "lag-1 autocorrelation of the normalised residuals %.2f\n"),
+              slope[["Value"]] / 10,
+              (slope[["Value"]] - qnorm(0.975) * slope[["Std.Error"]]) / 10,
+              (slope[["Value"]] + qnorm(0.975) * slope[["Std.Error"]]) / 10,
+              exp(slope[["Value"]] * (2025 - 1995) / 10),
+              residual_lag1(fit$linear, data)))
+  cat("\nnon-linearity: the quadratic coefficient (per decade^2), 95% interval\n")
+  print(intervals(fit$quadratic, which = "fixed")$fixed["I(t^2)", ])
+  cat("quadratic against linear:\n")
+  print(as.data.frame(lr_test(fit$linear, fit$quadratic)))
+  cat("\nregional variation: regional slopes against regional intercepts:\n")
+  print(as.data.frame(lr_test(fit$regional_level, fit$regional_slope)))
+  cat("regional slopes (per year, log scale), 95% intervals:\n")
+  print(regional_slopes(fit$regional_slope))
 }
-
-cat("posterior predictive checks (by value type: official TRUE/FALSE)\n")
-imap(fits, ~ mutate(ppc(.x), fit = .y)) %>%
-  bind_rows() %>%
-  relocate(fit) %>%
-  mutate(across(where(is.double), ~ signif(.x, 3))) %>%
-  print(width = 200)
 
 # figures ---------------------------------------------------------------------
 
-# fitted regional trend: the region's mean country intercept plus the regional
-# slope, over the country series
-year_grid <- first_year:last_year
-region_lines <- map(regions, function(r) {
-  in_region <- main$built$region_of_country == match(r, regions)
-  intercept <- rowMeans(main$sims$a[, in_region, drop = FALSE])
-  slope <- main$sims$region_slope[, match(r, regions)]
-  pred <- outer(intercept, rep(1, length(year_grid))) +
-    outer(slope, (year_grid - centre_year) / 10)
-  tibble(region = r, year = year_grid,
-         median = apply(pred, 2, median),
-         lower = apply(pred, 2, quantile, 0.025),
-         upper = apply(pred, 2, quantile, 0.975))
-}) %>%
-  bind_rows()
-
-country_lines <- map(seq_along(main$built$countries), function(i) {
-  pred <- outer(main$sims$a[, i], rep(1, length(year_grid))) +
-    outer(main$sims$country_slope[, i], (year_grid - centre_year) / 10)
-  tibble(country_name = main$built$countries[i],
-         region = regions[main$built$region_of_country[i]],
-         year = year_grid, median = apply(pred, 2, median))
-}) %>%
-  bind_rows()
-
+# Caption: FAOSTAT insecticide use (item 1309, kg active ingredient) per ha of
+# cropland, per country and year, by region; each country's values are joined
+# by a line. Black: the common linear trend fitted to the values reported by
+# the countries (the fixed effects, with their 95% interval), at the mean level
+# of the region's reporting countries.
+value_labels <- c(official = "Reported by the country (FAOSTAT flag A)",
+                  estimated = "Estimated by FAO (flags E and X)")
 value_type <- function(d) {
-  mutate(d, value = if_else(official, "official (A)", "estimated (E, X)"))
+  mutate(d, value = if_else(official, value_labels[["official"]],
+                            value_labels[["estimated"]]))
 }
 
+main <- fits$reported$linear
+year_grid <- first_year:last_year
+t_grid <- (year_grid - centre_year) / 10
+design <- cbind(1, t_grid)
+fixed <- design %*% fixef(main)
+fixed_se <- sqrt(rowSums((design %*% vcov(main)) * design))
+country_levels <- ranef(main) %>%
+  as_tibble(rownames = "country_name") %>%
+  rename(level = `(Intercept)`, slope = t) %>%
+  left_join(distinct(datasets$reported, country_name, region),
+            by = "country_name")
+region_lines <- country_levels %>%
+  group_by(region) %>%
+  summarise(level = mean(level), slope = mean(slope), .groups = "drop") %>%
+  cross_join(tibble(year = year_grid, t = t_grid, fixed = fixed[, 1],
+                    se = fixed_se)) %>%
+  mutate(median = fixed + level + slope * t,
+         lower = median - 1.96 * se,
+         upper = median + 1.96 * se)
+
 trend_plot <- ggplot(value_type(trend_data), aes(year, exp(y))) +
-  geom_line(aes(year, exp(median), group = country_name),
-            data = country_lines,
-            colour = "grey70", linewidth = 0.3) +
-  geom_point(aes(colour = value, shape = value), size = 0.9) +
+  geom_line(aes(group = country_name), colour = "grey75", linewidth = 0.3) +
+  geom_point(aes(colour = value, shape = value), size = 2.2) +
   geom_ribbon(aes(year, ymin = exp(lower), ymax = exp(upper)),
               data = region_lines, inherit.aes = FALSE,
               fill = "black", alpha = 0.15) +
   geom_line(aes(year, exp(median)), data = region_lines,
             inherit.aes = FALSE, linewidth = 0.8) +
-  scale_colour_manual(values = c("official (A)" = "#1f5fa8",
-                                 "estimated (E, X)" = "#9a9a9a"),
+  scale_colour_manual(values = setNames(c("#1f5fa8", "#9a9a9a"),
+                                        value_labels),
                       name = NULL) +
-  scale_shape_manual(values = c("official (A)" = 16,
-                                "estimated (E, X)" = 1), name = NULL) +
+  scale_shape_manual(values = setNames(c(16, 1), value_labels), name = NULL) +
   scale_y_log10() +
   facet_wrap(~ region, nrow = 1) +
-  labs(x = NULL, y = "insecticide, kg a.i. per ha cropland",
-       caption = paste("Black: regional trend (mean country intercept, regional slope), 95% interval.",
-                       "Grey lines: fitted country trends. FAOSTAT RP, item 1309.")) +
+  labs(x = NULL,
+       y = "Insecticide use (kg active ingredient per ha of cropland)") +
   theme_minimal(base_size = 9) +
-  theme(legend.position = "top", panel.grid.minor = element_blank())
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
 ggsave("figures/faostat_trend_regional_fits.png", trend_plot,
-       width = 12, height = 4, dpi = 150, bg = "white")
+       width = 12, height = 4, dpi = 300, bg = "white")
 
-slope_long <- imap(fits, function(fit, name) {
-  s <- slope_draws(fit)
-  as_tibble(s) %>%
-    pivot_longer(everything(), names_to = "region",
-                 values_to = "slope") %>%
-    mutate(fit = name)
+# Caption: the trend per region (slope of log insecticide use per ha of
+# cropland, per year) in the model with regional slopes, with 95% intervals,
+# for the reported values and for all values; the dashed line is the common
+# trend of the linear model.
+region_slopes <- imap(fits, function(fit, name) {
+  regional_slopes(fit$regional_slope) %>%
+    mutate(data = name, common = fixef(fit$linear)[["t"]] / 10)
 }) %>%
   bind_rows() %>%
-  mutate(region = factor(region, levels = rev(c("Africa", regions))),
-         fit = factor(fit, levels = names(fits)))
+  mutate(data = factor(c(reported = "Reported values",
+                         all = "All values")[data],
+                       levels = c("Reported values", "All values")),
+         region = factor(region, levels = rev(regions)))
 
-slope_plot <- ggplot(slope_long, aes(slope, region, fill = fit)) +
-  geom_violin(scale = "width", linewidth = 0.2, alpha = 0.7,
-              position = position_dodge(width = 0.8)) +
-  geom_vline(xintercept = 0, colour = "grey50") +
-  scale_fill_manual(values = c(main = "#1f5fa8",
-                               official_only = "#e08a1e",
-                               no_common_share = "#9a9a9a"),
-                    name = NULL) +
-  labs(x = "slope of log insecticide per ha cropland, per year",
+slope_plot <- ggplot(region_slopes, aes(slope, region)) +
+  geom_vline(aes(xintercept = common), linetype = 2, colour = "grey50") +
+  geom_vline(xintercept = 0, colour = "grey80") +
+  geom_pointrange(aes(xmin = lower, xmax = upper), size = 0.5) +
+  facet_wrap(~ data, scales = "free_x") +
+  labs(x = "Slope of log insecticide use per ha of cropland, per year",
        y = NULL) +
   theme_minimal(base_size = 9) +
-  theme(legend.position = "top", panel.grid.minor = element_blank())
+  theme(panel.grid.minor = element_blank())
 ggsave("figures/faostat_trend_regional_slopes.png", slope_plot,
-       width = 7, height = 5, dpi = 150, bg = "white")
+       width = 7, height = 3.5, dpi = 300, bg = "white")

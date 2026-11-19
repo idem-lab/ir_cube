@@ -1,5 +1,10 @@
-# illustrate the inherent variability in biassay data at a set of locations with
-# high sampling density
+# The overdispersion of bioassays, rho, per insecticide type, fitted to every
+# group of replicate bioassays (outputs/bioassay_rho_hierarchical.csv and
+# bioassay_rho_type_draws.rds), its check against replicate pairs
+# (bioassay_rho_pair_check.csv), and the power of cluster-stratified bioassays
+# (figures/cluster_sampling_power.png). The figure of replicate bioassays at
+# the most sampled places is R/fig_bioassay_variability.R, from these
+# estimates.
 
 # greta first, so python starts before terra and sf are attached
 source("R/greta_setup.R")
@@ -20,17 +25,6 @@ rm(modelled)
 
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
-
-insecticides_plot <- tibble(
-  insecticide = types,
-  class = classes[classes_index]
-) %>%
-  arrange(desc(class), insecticide) %>%
-  pull(insecticide)
-
-insecticides_plot_small <- c("Deltamethrin",
-                             "Permethrin",
-                             "Alpha-cypermethrin")
 
 ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
 
@@ -61,84 +55,28 @@ df <- ir_africa %>%
     cell_id = match(cell, unique(cell))
   )
 
-# subset df to the cell and year with the most bioassay results
-df_most_sampled <- df %>%
-  filter(
-    insecticide_type %in% insecticides_plot_small
-  ) %>%
-  mutate(
-    cell_year_type = sprintf("location %i\n(%i)\n%s",
-                             cell_id,
-                             year,
-                             insecticide_type)
-  ) %>%
-  group_by(
-    cell_year_type,
-    cell_id,
-    year,
-    insecticide_type
-  ) %>%
-  summarise(
-    count = n(),
-    .groups = "drop"
-  ) %>%
-  arrange(
-    desc(count)
-  ) %>%
-  slice(1:6) %>%
-  # bind_cols(
-  #   xyFromCell(mask, .$cell)
-  # ) %>%
-  # reverse_geocode(
-  #   lat = y,
-  #   long = x,
-  #   method = 'osm',
-  #   full_results = TRUE
-  # ) %>%
-  # mutate(
-  #   precise_place = str_split_i(address, ",", 1),
-  #   precise_place = case_when(
-  #     grepl("Placodji", address) ~ "Placodji, Cotonou",
-  #     grepl("Busia", address) ~ "Busia",
-  #     .default = precise_place
-  #   ),
-  #   place = paste(precise_place, country, sep = ", ")
-  # ) %>%
-  select(
-    cell_year_type,
-    cell_id,
-    year,
-    insecticide_type,
-    count,
-    # place
-  ) %>%
-  left_join(
-    mutate(df,
-           index = row_number()),
-    by = c("cell_id", "year", "insecticide_type")
-  ) %>%
-  mutate(
-    Susceptibility = died / mosquito_number
-  )
-
 # Estimate the bioassay overdispersion rho, hierarchically by insecticide type
 # nested in class.
 #
 # This previously fitted a single rho to the six most sampled cell-year-type
 # combinations, with a free fraction per combination. Two problems with using
 # that for the validation noise floor. It used 81 assays where the whole
-# replicated set has 9,420, and a single rho is badly misspecified: fitted
-# separately, the nine insecticide types range from 0.093 (Lambda-cyhalothrin)
-# to 0.256 (Alpha-cypermethrin), and heterogeneity *within* the pyrethroids
-# (I2 = 97%) exceeds that between classes. Pooling to the class level forces
-# Lambda-cyhalothrin and Alpha-cypermethrin to share 0.164, which overstates one
-# floor by 76% and understates the other by 36%.
+# replicated set has 5,014, and a single rho is badly misspecified: fitted
+# separately (before the study-year effect), the nine insecticide types range
+# from 0.093 (Lambda-cyhalothrin) to 0.256 (Alpha-cypermethrin), and
+# heterogeneity *within* the pyrethroids (I2 = 97%) exceeds that between
+# classes. Pooling to the class level forces Lambda-cyhalothrin and
+# Alpha-cypermethrin to share 0.164, which overstates one floor by 76% and
+# understates the other by 36%.
 #
 # The model, for group g (a cell x year x insecticide combination) with assays
-# j, of insecticide type t in class c:
+# j, of insecticide type t in class c, each assay from study-year-type k(j)
+# of type t(k):
 #
-#   died_gj | p_g  ~ BetaBinomial(mosquito_number_gj, p_g, rho_t)
+#   died_gj | p_gj ~ BetaBinomial(mosquito_number_gj, p_gj, rho_t)
+#   logit(p_gj)    = logit(p_g) + s_k(j)
 #   p_g            ~ Beta(a0_t, b0_t)
+#   s_k            ~ Normal(0, sigma_study_t(k))
 #   logit(rho_t)   ~ Normal(mu_c, sigma_within)
 #   mu_c           ~ Normal(mu, sigma_between)
 #
@@ -146,7 +84,7 @@ df_most_sampled <- df %>%
 # the incidental parameters problem that joint maximisation over one p_g per
 # group would: most groups hold only two assays. Partial pooling across types
 # shares strength toward the thinly sampled ones - Pirimiphos-methyl and
-# Malathion have about 100 groups each, against 1,157 for Deltamethrin.
+# Malathion have 91 and 55 groups, against 692 for Deltamethrin.
 #
 # Every replicated group is used, not just the six plotted below.
 # restricted to the nine insecticides the model covers: `df` here carries all
@@ -173,6 +111,15 @@ class_id <- match(class_of_type, class_names)
 n_groups <- length(group_keys)
 n_types <- length(type_names)
 n_classes <- length(class_names)
+
+# study-year of each bioassay (study x year, as in stage 2), separate for each
+# insecticide type
+study_year_keys <- unique(paste(replicated_all$insecticide_type,
+                                replicated_all$study, replicated_all$year))
+study_year_id <- match(paste(replicated_all$insecticide_type,
+                             replicated_all$study, replicated_all$year),
+                       study_year_keys)
+type_of_study_year <- type_id[match(seq_along(study_year_keys), study_year_id)]
 
 cat(sprintf("hierarchical rho: %i assays, %i groups, %i types, %i classes\n",
             nrow(replicated_all), n_groups, n_types, n_classes))
@@ -207,15 +154,24 @@ a0 <- beta_mean * beta_conc
 b0 <- (1 - beta_mean) * beta_conc
 probs <- beta(a0[type_of_group], b0[type_of_group], dim = n_groups)
 
+# a study-year effect on the logit of each bioassay's fraction, non-centred,
+# with an SD per insecticide type, so that rho is the noise between bioassays
+# of one study in a cell and year
+sigma_study <- normal(0, 1, truncation = c(0, Inf), dim = n_types)
+z_study <- normal(0, 1, dim = length(study_year_keys))
+study_effect <- sigma_study[type_of_study_year] * z_study
+p_assay <- ilogit(log(probs[group_id]) - log1p(-probs[group_id]) +
+                    study_effect[study_year_id])
+
 distribution(replicated_all$died) <- betabinomial_p_rho(
   N = replicated_all$mosquito_number,
-  p = probs[group_id],
+  p = p_assay,
   rho = rho_type[type_id])
 
-m <- model(rho_type, mu_class, sigma_within, sigma_between)
+m <- model(rho_type, mu_class, sigma_within, sigma_between, sigma_study)
 
 # initialised near the per-type maximum likelihood estimates, so the chains do
-# not have to find the posterior from the prior in a 3,700-parameter model
+# not have to find the posterior from the prior in a model this large
 rho_start <- c(`Alpha-cypermethrin` = 0.256, Bendiocarb = 0.131, DDT = 0.118,
                Deltamethrin = 0.155, Fenitrothion = 0.130,
                `Lambda-cyhalothrin` = 0.093, Malathion = 0.257,
@@ -239,15 +195,13 @@ start <- initials(
 # seeded, so the overdispersion estimates the whole pipeline scores against can
 # be reproduced from this script
 set.seed(2026 - 9 - 30)
-# Twice greta's default leapfrog steps (Lmin 5, Lmax 10). The binding
-# constraint is mixing in the hierarchy variances, not warmup: at the default
-# this fit reached worst Rhat 1.083 with minimum effective sample size 211 over
-# 16,000 post-warmup draws. Longer trajectories cost proportionally more time
-# per iteration but decorrelate those parameters. On the deduplicated bioassays
-# of #63, 4,000 draws per chain still left the hierarchy parameters at worst
-# Rhat 1.066 (rho_type at most 1.011), hence 16,000.
+# Three times greta's default leapfrog steps (Lmin 5, Lmax 10). The binding
+# constraint is mixing in the hierarchy variances, not warmup: longer
+# trajectories cost proportionally more time per iteration but decorrelate
+# those parameters. With the study-year effect, twice the default steps left
+# worst Rhat 1.051 over 16,000 post-warmup draws per chain.
 rho_draws <- mcmc(m, n_samples = 16000, warmup = 5000, chains = 4,
-                  sampler = hmc(Lmin = 10, Lmax = 20),
+                  sampler = hmc(Lmin = 15, Lmax = 30),
                   initial_values = replicate(4, start, simplify = FALSE))
 
 worst_rhat <- max(coda::gelman.diag(rho_draws, multivariate = FALSE,
@@ -267,6 +221,10 @@ rho_type_lower <- rho_summary$quantiles[paste0("rho_type[", seq_len(n_types), ",
 rho_type_upper <- rho_summary$quantiles[paste0("rho_type[", seq_len(n_types), ",1]"),
                                         "97.5%"]
 names(rho_type_mean) <- type_names
+cat("\nsigma_study by insecticide type:\n")
+sigma_study_rows <- paste0("sigma_study[", seq_len(n_types), ",1]")
+print(round(rho_summary$quantiles[sigma_study_rows, c("2.5%", "50%", "97.5%")],
+            3))
 
 # The joint draws, not only the summaries. The hierarchy correlates rho between
 # types, so rebuilding them as independent logit-normals from each type's
@@ -297,8 +255,11 @@ print(rho_hierarchical %>% mutate(across(where(is.numeric), ~ round(.x, 4))))
 # The check of rho-hat against replicate pairs, model-free: on the same
 # bioassays, one bioassay's noise variance as half the squared difference
 # between two at a pixel-year (per bioassay, averaged over its partners),
-# over the noise rho-hat implies (noise_floor_record()). Near 1 if rho-hat is
-# right: 1.01 (95% interval 0.92-1.11) over 9,424 bioassays in October 2026.
+# over the noise rho-hat implies (noise_floor_record()). Before the study-year
+# effect this was near 1: 1.01 (95% interval 0.92-1.11) over 9,424 bioassays
+# in October 2026. rho-hat is now the noise within one study, while the pairs
+# include bioassays of different studies: 1.09 (0.95-1.24) over 5,011
+# bioassays in November 2026.
 # Every n* (#40) and every noise floor in the validation rests on rho-hat.
 # Intervals resample pixels. Written to outputs/bioassay_rho_pair_check.csv
 source("R/validation_scoring.R")
@@ -332,138 +293,9 @@ write.csv(rho_pair_check, "outputs/bioassay_rho_pair_check.csv",
 cat("\none bioassay's noise variance, replicate pairs over rho-hat:\n")
 print(as.data.frame(rho_pair_check), digits = 3)
 
-# the overall level, for the figure subtitle: the posterior mean of rho across
-# types, weighted by the assays each contributes
+# the overall level: the posterior mean of rho across types, weighted by the
+# assays each contributes
 rho_bayes <- weighted.mean(rho_hierarchical$rho, rho_hierarchical$n_assays)
-
-# compute expected and observed statistics of these to elucidate the distribution
-df_most_sampled_stats <- df_most_sampled %>%
-  group_by(cell_year_type, insecticide_type) %>%
-  summarise(
-    # point estimate of suitability
-    Susceptibility = sum(died) / sum(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    # 95% CIs under binomial (independence) sampling assumption
-    binom_lower_100 = qbinom(0.025, 100, Susceptibility) / 100,
-    binom_upper_100 = qbinom(0.975, 100, Susceptibility) / 100,
-    # 95% CIs under betabinomial (non-independence) sampling assumption, using
-    # the posterior mean estimated by our model
-    # MLE is lower, maybe biased down
-    # each example gets the rho of its own insecticide type, rather than one
-    # value shared across all of them
-    rho = rho_type_mean[insecticide_type],
-    alpha = Susceptibility * (1 / rho - 1),
-    beta = alpha * (1 - Susceptibility) / Susceptibility,
-    betabinom_lower_100 = qbbinom(0.025, 100, alpha, beta) / 100,
-    betabinom_upper_100 = qbbinom(0.975, 100, alpha, beta) / 100,
-  )
-
-colour_types <- scales::hue_pal(direction = -1)(9)
-types_plot_id <- match(insecticides_plot_small, insecticides_plot)
-colours_plot <- colour_types[types_plot_id]
-
-set.seed(1)
-df_most_sampled %>%
-  # shuffle the x axes so the points don't overlap too much
-  mutate(
-    x_random = sample(seq(0.2, 1.8, length.out = n()))
-  ) %>%
-  ggplot(
-    aes(
-      xmin = 0,
-      xmax = 2,
-      group = cell_year_type
-    )
-  ) +
-  geom_rect(
-    aes(
-      ymax = betabinom_upper_100,
-      ymin = betabinom_lower_100,
-    ),
-    data = df_most_sampled_stats,
-    fill = grey(0.9)
-  ) +
-  geom_rect(
-    aes(
-      ymax = binom_upper_100,
-      ymin = binom_lower_100,
-    ),
-    data = df_most_sampled_stats,
-    fill = grey(0.7)
-  ) +
-  geom_rect(
-    aes(
-      ymax = Susceptibility,
-      ymin = Susceptibility
-    ),
-    data = df_most_sampled_stats,
-    linewidth = 1,
-    colour = grey(0.4)
-  ) +
-  geom_point(
-    aes(
-      y = Susceptibility,
-      size = mosquito_number,
-      x = x_random,
-      fill = insecticide_type
-    ),
-    shape = 21
-  ) +
-  facet_wrap(~cell_year_type,
-             nrow = 1,
-             strip.position = "bottom") +
-  scale_y_continuous(
-    labels = scales::percent,
-    limits = c(0, 1)
-  ) +
-  scale_x_continuous(
-    limits = c(0, 2)
-  ) +
-  scale_fill_manual(
-    values = colours_plot
-  ) +
-  xlab("") +
-  theme_minimal() +
-  guides(
-    fill = "none",
-    size = guide_legend(title = "No. tested")
-  ) +
-  theme(
-    axis.text.x = element_blank(),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor.x = element_blank()
-  ) +
-  ggtitle(
-    "Significant variability in replicated bioassay results",
-    sprintf("95%s sampling intervals under binomial (mid grey) and betabinomial
-(light grey) sampling, at N=100. Correlation rho is estimated hierarchically by
-insecticide type (%s here; %s to %s across all nine types).",
-            "%",
-            paste(sprintf("%s %.2f", insecticides_plot_small,
-                          rho_type_mean[insecticides_plot_small]),
-                  collapse = ", "),
-            round(min(rho_hierarchical$rho), 2),
-            round(max(rho_hierarchical$rho), 2))
-  )
-
-ggsave(
-  "figures/bioassay_variability.png",
-  bg = "white",
-  scale = 0.9,
-  width = 8,
-  height = 6
-)
-
-# Multiple discriminating concentration bioassay results against Pyrethroids at
-# a single locations (5km grid cells) and years, as an example of the inherent
-# variability in this type of data. Dark grey horizontal lines give the (sample
-# size weighted) mean of the susceptibility estimates, medium grey bands give
-# the 95% sampling interval of a binomial distribution, with this mean and 100
-# samples, light grey bands give the 95% sampling interval of a beta-binomial
-# distribution, with this mean, 100 samples, and correlation parameter estimate
-# from each dataset independently.
 
 # Using this estimate of the dispersion in susceptibility bioassays (and
 # assuming each was sampled from a single location), plot how the statistical

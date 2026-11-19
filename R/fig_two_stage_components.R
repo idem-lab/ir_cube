@@ -3,7 +3,7 @@
 #
 #   figures/two_stage/supp_components_realisations.png (and .pdf)
 #     joint random realisations of every component through time, stacked on a
-#     shared time axis: net use, the dynamical model's logit m, the annual
+#     shared time axis: the dynamical model's logit m, the annual
 #     anomalies eta, their accumulation xi, the static omega, the target
 #     m + omega + xi, and mortality with the data
 #   figures/two_stage/supp_components_intervals.png (and .pdf)
@@ -16,6 +16,8 @@
 # and paired dynamical draws this reads; nothing is refitted. Run with
 # OpenBLAS, e.g.
 #   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3 nice -n 10 Rscript ...
+# The draws the figures show are cached in temporary/fig_two_stage_components.rds
+# (R/figure_cache.R), so changes to the plots alone rerun in seconds.
 #
 # The target, on the logit scale, is m(s, t) + omega(s) + xi(s, t): m the
 # dynamical model's prediction, xi(s, t) the sum of the annual anomalies eta up
@@ -38,194 +40,244 @@ suppressMessages({
 source("R/dynamical_predictions.R")
 source("R/two_stage_correction.R")
 source("R/two_stage_map_functions.R")
+source("R/figure_cache.R")
 
 end_year <- 2030
 years_all <- baseline_year:end_year
 k <- match(type, types)
 rows_k <- which(df$type_id == k)
-
-# the fit and the 2000 paired dynamical draws saved by R/two_stage_maps.R
-fit <- readRDS(file.path(maps_dir, "fit.rds"))
-dynamical <- readRDS(file.path(maps_dir, "dynamical.rds"))
 train_k <- tibble(lon = df$longitude[rows_k], lat = df$latitude[rows_k],
                   year = df$year[rows_k], cell = df$cell[rows_k],
                   died = df$died[rows_k],
-                  mosquito_number = df$mosquito_number[rows_k])
-stopifnot(fit$n_obs == nrow(train_k),
-          ncol(dynamical$logit_train) == nrow(train_k),
-          max(abs(fit$m_ref - colMeans(dynamical$logit_train))) < 1e-12)
-T_k <- fit$T
-n_draws <- nrow(dynamical$logit_train)
+                  mosquito_number = df$mosquito_number[rows_k],
+                  site = df$site[rows_k])
 
-# Joint draws of the correction's node fields at every year 1995-2030, for the
-# 2000 paired draws: draw d pairs dynamical draw d with a latent draw from
-# N(mode, H^-1) shifted by the cut-posterior formula for it, and the AR(1)
-# forecast of eta beyond T (correction_node_draws()); one call for all the
-# draws, so that each CCD point's conditional fit is made once
-set.seed(4026 + k)
-fields <- correction_node_draws(
-  fit, years_all, n_draws,
-  m_draws_train = dynamical$logit_train[seq_len(n_draws), , drop = FALSE])
+# The example pixels, and the draws of every component there that the figures
+# show (sections 1-3 of the computation): three joint realisations and the
+# posterior mean of m, and the posterior mean and 95% interval of mortality
+# under the dynamical model alone and the two-stage model; years x pixels
+# (x realisations)
+compute_components <- function(type, k, years_all, baseline_year, train_k,
+                               data_countries, maps_dir) {
+  end_year <- max(years_all)
+  mask <- rast("data/clean/raster_mask.tif")
 
+  # 1. the fit and the 2000 paired dynamical draws saved by
+  # R/two_stage_maps.R
+  fit <- readRDS(file.path(maps_dir, "fit.rds"))
+  dynamical <- readRDS(file.path(maps_dir, "dynamical.rds"))
+  stopifnot(fit$n_obs == nrow(train_k),
+            ncol(dynamical$logit_train) == nrow(train_k),
+            max(abs(fit$m_ref - colMeans(dynamical$logit_train))) < 1e-12)
+  T_k <- fit$T
+  n_draws <- nrow(dynamical$logit_train)
 
-# 2. example pixels ---------------------------------------------------------------
+  # Joint draws of the correction's node fields at every year 1995-2030, for
+  # the 2000 paired draws: draw d pairs dynamical draw d with a latent draw
+  # from N(mode, H^-1) shifted by the cut-posterior formula for it, and the
+  # AR(1) forecast of eta beyond T (correction_node_draws()); one call for all
+  # the draws, so that each CCD point's conditional fit is made once
+  set.seed(4026 + k)
+  fields <- correction_node_draws(
+    fit, years_all, n_draws,
+    m_draws_train = dynamical$logit_train[seq_len(n_draws), , drop = FALSE])
 
-# The data per pixel, and the posterior mean of the smooth correction
-# (omega + xi at T) at each sampled pixel, the mean of its draws
-coords_train <- coords_km(train_k)
-pixel_summary <- train_k %>%
-  mutate(x_km = coords_train[, 1], y_km = coords_train[, 2]) %>%
-  group_by(cell) %>%
-  summarise(lon = mean(lon), lat = mean(lat),
-            x_km = mean(x_km), y_km = mean(y_km),
-            n_assays = n(), n_years = n_distinct(year),
-            first = min(year), last = max(year),
-            n_before = sum(year <= 2008), n_after = sum(year >= 2014),
-            .groups = "drop")
-pixel_coords <- as.matrix(pixel_summary[, c("x_km", "y_km")])
-pixel_summary$smooth_T <- rowMeans(project_correction(
-  fit, fields, mutate(pixel_summary, year = T_k)))
+  # 2. example pixels
 
-# (i) well sampled: data both before the net scale-up (to 2008) and after it
-# (from 2014), and the most distinct years of data among such pixels
-well <- pixel_summary %>%
-  filter(n_before > 0, n_after > 0) %>%
-  arrange(desc(n_years), desc(n_assays)) %>%
-  slice(1)
+  # The data per pixel, and the posterior mean of the smooth correction
+  # (omega + xi at T) at each sampled pixel, the mean of its draws
+  coords_train <- coords_km(train_k)
+  pixel_summary <- train_k %>%
+    mutate(x_km = coords_train[, 1], y_km = coords_train[, 2]) %>%
+    group_by(cell) %>%
+    summarise(lon = mean(lon), lat = mean(lat),
+              x_km = mean(x_km), y_km = mean(y_km),
+              n_assays = n(), n_years = n_distinct(year),
+              first = min(year), last = max(year),
+              n_before = sum(year <= 2008), n_after = sum(year >= 2014),
+              .groups = "drop")
+  pixel_coords <- as.matrix(pixel_summary[, c("x_km", "y_km")])
+  pixel_summary$smooth_T <- rowMeans(project_correction(
+    fit, fields, mutate(pixel_summary, year = T_k)))
 
-# (iii) large correction: among pixels with at least three years of data, the
-# largest posterior mean |omega + xi| at T, i.e. where the data pull the
-# prediction furthest from the dynamical model
-large <- pixel_summary %>%
-  filter(n_years >= 3, cell != well$cell) %>%
-  arrange(desc(abs(smooth_T))) %>%
-  slice(1)
+  # (i) well sampled: data both before the net scale-up (to 2008) and after
+  # it (from 2014), and the most distinct years of data among such pixels
+  well <- pixel_summary %>%
+    filter(n_before > 0, n_after > 0) %>%
+    arrange(desc(n_years), desc(n_assays)) %>%
+    slice(1)
 
-# (ii) no data: a cell of the prediction mask inside the limits of Pf
-# transmission, 400-600 km from the nearest Deltamethrin assay, in a country
-# with Deltamethrin data: far beyond the range of omega (~43 km), so omega and
-# p revert to their priors and the prediction to the dynamical model, but
-# within the reach of the large-scale xi (range ~1000 km). The candidate with
-# the highest net use in 2020 is taken, so that the dynamical model has a
-# trajectory to follow
-pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
-country_raster <- rast("data/clean/country_raster.tif")
-mask_cells <- terra::cells(terra::mask(mask, pf_water_mask))
-set.seed(1)
-candidate_cells <- sort(sample(mask_cells, min(length(mask_cells), 40000)))
-xy_candidates <- terra::xyFromCell(mask, candidate_cells)
-coords_candidates <- project_km(xy_candidates[, 1], xy_candidates[, 2])
-nearest_km <- apply(coords_candidates, 1, function(xy) {
-  sqrt(min((pixel_coords[, 1] - xy[1]) ^ 2 + (pixel_coords[, 2] - xy[2]) ^ 2))
-})
-candidate_country <- as.character(
-  terra::extract(country_raster, candidate_cells)$country_name)
-data_countries <- unique(df$country_name[rows_k])
-nets_2020 <- terra::extract(rast("data/clean/net_use_cube.tif")[["nets_2020"]],
-                            candidate_cells)[, 1]
-ok <- nearest_km > 400 & nearest_km < 600 &
-  candidate_country %in% data_countries & !is.na(nets_2020)
-none_cell <- candidate_cells[ok][which.max(nets_2020[ok])]
-none <- tibble(cell = none_cell,
-               lon = xy_candidates[match(none_cell, candidate_cells), 1],
-               lat = xy_candidates[match(none_cell, candidate_cells), 2],
-               n_assays = 0L, n_years = 0L,
-               nearest_km = nearest_km[match(none_cell, candidate_cells)])
+  # (iii) large correction: among pixels with at least three years of data,
+  # the largest posterior mean |omega + xi| at T, i.e. where the data pull the
+  # prediction furthest from the dynamical model
+  large <- pixel_summary %>%
+    filter(n_years >= 3, cell != well$cell) %>%
+    arrange(desc(abs(smooth_T))) %>%
+    slice(1)
 
-pixels <- bind_rows(
-  mutate(well, role = "well"),
-  mutate(none, role = "none"),
-  mutate(large, role = "large")
-) %>%
-  mutate(country = as.character(
-    terra::extract(country_raster, cell)$country_name))
-report("pixels: %s", paste(sprintf("%s cell %i (%s, %.2f, %.2f; %i assays, %i years)",
-                                  pixels$role, pixels$cell, pixels$country,
-                                  pixels$lon, pixels$lat, pixels$n_assays,
-                                  pixels$n_years), collapse = "; "))
+  # (ii) no data: a cell of the prediction mask inside the limits of Pf
+  # transmission, 400-600 km from the nearest assay of the type, in a country
+  # with data for it: far beyond the range of omega (~43 km), so omega and p
+  # revert to their priors and the prediction to the dynamical model, but
+  # within the reach of the large-scale xi (range ~1000 km). The candidate
+  # with the highest net use in 2020 is taken, so that the dynamical model has
+  # a trajectory to follow
+  pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
+  country_raster <- rast("data/clean/country_raster.tif")
+  mask_cells <- terra::cells(terra::mask(mask, pf_water_mask))
+  set.seed(1)
+  candidate_cells <- sort(sample(mask_cells, min(length(mask_cells), 40000)))
+  xy_candidates <- terra::xyFromCell(mask, candidate_cells)
+  coords_candidates <- project_km(xy_candidates[, 1], xy_candidates[, 2])
+  nearest_km <- apply(coords_candidates, 1, function(xy) {
+    sqrt(min((pixel_coords[, 1] - xy[1]) ^ 2 +
+               (pixel_coords[, 2] - xy[2]) ^ 2))
+  })
+  candidate_country <- as.character(
+    terra::extract(country_raster, candidate_cells)$country_name)
+  nets_2020 <- terra::extract(
+    rast("data/clean/net_use_cube.tif")[["nets_2020"]], candidate_cells)[, 1]
+  ok <- nearest_km > 400 & nearest_km < 600 &
+    candidate_country %in% data_countries & !is.na(nets_2020)
+  none_cell <- candidate_cells[ok][which.max(nets_2020[ok])]
+  none <- tibble(cell = none_cell,
+                 lon = xy_candidates[match(none_cell, candidate_cells), 1],
+                 lat = xy_candidates[match(none_cell, candidate_cells), 2],
+                 n_assays = 0L, n_years = 0L,
+                 nearest_km = nearest_km[match(none_cell, candidate_cells)])
 
+  pixels <- bind_rows(
+    mutate(well, role = "well"),
+    mutate(none, role = "none"),
+    mutate(large, role = "large")
+  ) %>%
+    mutate(country = as.character(
+      terra::extract(country_raster, cell)$country_name))
+  report("pixels: %s",
+         paste(sprintf("%s cell %i (%s, %.2f, %.2f; %i assays, %i years)",
+                       pixels$role, pixels$cell, pixels$country,
+                       pixels$lon, pixels$lat, pixels$n_assays,
+                       pixels$n_years), collapse = "; "))
 
-# 3. draws at the pixels ------------------------------------------------------------
+  # 3. draws at the pixels
 
-# Every component at each pixel and year 1995-2030, for the 2000 paired draws
-# (the fields drawn above, project_correction())
-n_pix <- nrow(pixels)
-n_years_all <- length(years_all)
+  # Every component at each pixel and year 1995-2030, for the 2000 paired
+  # draws (the fields drawn above, project_correction())
+  n_pix <- nrow(pixels)
+  n_years_all <- length(years_all)
 
-# dynamical logit at the pixels, as a years x pixels x draws array
-covariates <- map_covariates(pixels$cell, baseline_year, end_year,
-                             dynamical$parameters$options$selection_columns)
-pixel_country <- match(pixels$country, dimnames(dynamical$logit_init)[[2]])
-stopifnot(!anyNA(pixel_country))
-pixel_smooths <- cell_smooths(
-  dynamical$parameters,
-  prediction_basis(dynamical$parameters$options$smooth, pixels$cell))
-m <- dynamical_logit_cells(dynamical$parameters, k,
-                           matrix(dynamical$logit_init[, pixel_country, k],
-                                  n_draws),
-                           map_x(covariates, seq_len(n_pix), n_years_all),
-                           seq_len(n_years_all), x_init = covariates$init,
-                           smooths = pixel_smooths)
-m <- aperm(simplify2array(m), c(3, 2, 1))
+  # dynamical logit at the pixels, as a years x pixels x draws array
+  covariates <- map_covariates(pixels$cell, baseline_year, end_year,
+                               dynamical$parameters$options$selection_columns)
+  pixel_country <- match(pixels$country, dimnames(dynamical$logit_init)[[2]])
+  stopifnot(!anyNA(pixel_country))
+  pixel_smooths <- cell_smooths(
+    dynamical$parameters,
+    prediction_basis(dynamical$parameters$options$smooth, pixels$cell))
+  m <- dynamical_logit_cells(dynamical$parameters, k,
+                             matrix(dynamical$logit_init[, pixel_country, k],
+                                    n_draws),
+                             map_x(covariates, seq_len(n_pix), n_years_all),
+                             seq_len(n_years_all), x_init = covariates$init,
+                             smooths = pixel_smooths)
+  m <- aperm(simplify2array(m), c(3, 2, 1))
 
-# check: at the sampled pixels' data years, the same draws as at the assays
-for (i in which(pixels$n_assays > 0)) {
-  rows_i <- which(train_k$cell == pixels$cell[i])
-  j <- match(train_k$year[rows_i], years_all)
-  difference <- max(abs(t(matrix(m[j, i, ], length(j))) -
-                          dynamical$logit_train[, rows_i]))
-  report("pixel %i: max |m - m at the assays| = %.1e", pixels$cell[i],
-         difference)
-  stopifnot(difference < 1e-6)
+  # check: at the sampled pixels' data years, the same draws as at the assays
+  for (i in which(pixels$n_assays > 0)) {
+    rows_i <- which(train_k$cell == pixels$cell[i])
+    j <- match(train_k$year[rows_i], years_all)
+    difference <- max(abs(t(matrix(m[j, i, ], length(j))) -
+                            dynamical$logit_train[, rows_i]))
+    report("pixel %i: max |m - m at the assays| = %.1e", pixels$cell[i],
+           difference)
+    stopifnot(difference < 1e-6)
+  }
+
+  # omega + xi at every pixel-year, and omega alone (xi is 0 in year t0)
+  pixel_xy <- terra::xyFromCell(mask, pixels$cell)
+  coords_pix <- project_km(pixel_xy[, 1], pixel_xy[, 2])
+  new <- tibble(x_km = rep(coords_pix[, 1], each = n_years_all),
+                y_km = rep(coords_pix[, 2], each = n_years_all),
+                year = rep(years_all, n_pix))
+  new_omega <- tibble(x_km = coords_pix[, 1], y_km = coords_pix[, 2],
+                      year = fit$t0)
+  correction <- array(NA_real_, c(n_years_all, n_pix, n_draws))
+  omega <- matrix(NA_real_, n_pix, n_draws)
+  correction[] <- project_correction(fit, fields, new)
+  omega[] <- project_correction(fit, fields, new_omega)
+  rm(fields)
+  omega_array <- array(rep(omega, each = n_years_all), dim(correction))
+  xi <- correction - omega_array
+  eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]
+  lambda <- m + correction
+
+  # three joint realisations, spread over the posterior of the dynamical
+  # model: draw d pairs the dynamical draw d with the correction's latent
+  # draw d
+  set.seed(5)
+  which_draws <- sort(sample(n_draws, 3))
+
+  # mortality intervals for the population fraction at each pixel-year: the
+  # dynamical model alone (plogis(m)) and the two-stage model
+  # (plogis(m + omega + xi), with the cut-posterior shift)
+  intervals <- function(values) {
+    list(mean = apply(values, 1:2, mean),
+         lower = apply(values, 1:2, quantile, 0.025),
+         upper = apply(values, 1:2, quantile, 0.975))
+  }
+  list(pixels = pixels,
+       T = T_k,
+       realisations = list(m = m[, , which_draws, drop = FALSE],
+                           eta = eta[, , which_draws, drop = FALSE],
+                           xi = xi[, , which_draws, drop = FALSE],
+                           omega = omega[, which_draws, drop = FALSE],
+                           lambda = lambda[, , which_draws, drop = FALSE]),
+       m_mean = apply(m, 1:2, mean),
+       intervals = list(dynamical = intervals(plogis(m)),
+                        two_stage = intervals(plogis(lambda))))
 }
 
-# omega + xi at every pixel-year, and omega alone (xi is 0 in year t0)
-pixel_xy <- terra::xyFromCell(mask, pixels$cell)
-coords_pix <- project_km(pixel_xy[, 1], pixel_xy[, 2])
-new <- tibble(x_km = rep(coords_pix[, 1], each = n_years_all),
-              y_km = rep(coords_pix[, 2], each = n_years_all),
-              year = rep(years_all, n_pix))
-new_omega <- tibble(x_km = coords_pix[, 1], y_km = coords_pix[, 2],
-                    year = fit$t0)
-correction <- array(NA_real_, c(n_years_all, n_pix, n_draws))
-omega <- matrix(NA_real_, n_pix, n_draws)
-correction[] <- project_correction(fit, fields, new)
-omega[] <- project_correction(fit, fields, new_omega)
-rm(fields)
-omega_array <- array(rep(omega, each = n_years_all), dim(correction))
-xi <- correction - omega_array
-eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]
-lambda <- m + correction
-nets <- covariates$time_varying[, , "nets"]
-rm(dynamical, covariates, correction, omega_array)
+components <- cached_figure_data(
+  "temporary/fig_two_stage_components.rds", compute_components,
+  args = list(type = type, k = k, years_all = years_all,
+              baseline_year = baseline_year, train_k = train_k,
+              data_countries = unique(df$country_name[rows_k]),
+              maps_dir = maps_dir),
+  sources = c("R/two_stage_helpers.R", "R/validation_folds.R",
+              "R/validation_covariates.R", "R/dynamical_predictions.R",
+              "R/two_stage_correction.R", "R/two_stage_map_functions.R"),
+  inputs = two_stage_figure_inputs(type)
+)
+pixels <- components$pixels
+T_k <- components$T
 
 
 # 4. figures ------------------------------------------------------------------------
 
 years <- years_all
 
-# panel titles, in the order of `pixels`
+# panel titles, in the order of `pixels`: the pixel's site (the most common
+# site name of its bioassays) and country; the pixel without data has no site,
+# and its distance to the nearest bioassay instead
 role_title <- c(well = "A) Well sampled",
                 none = "B) No data",
                 large = "C) Large correction")
+pixel_site <- vapply(pixels$cell, function(cell) {
+  sites <- train_k$site[train_k$cell == cell]
+  if (length(sites) == 0) NA_character_ else names(which.max(table(sites)))
+}, character(1))
 pixels <- pixels %>%
-  mutate(title = sprintf("%s: %s\n%s; %s",
-                         role_title[role], country,
-                         sprintf("%.1f°%s, %.1f°%s",
-                                 abs(lat), ifelse(lat >= 0, "N", "S"),
-                                 abs(lon), ifelse(lon >= 0, "E", "W")),
-                         ifelse(n_assays > 0,
-                                sprintf("%i assays, %i years", n_assays,
-                                        n_years),
-                                sprintf("nearest assay %.0f km",
-                                        nearest_km))),
+  mutate(title = sprintf("%s\n%s", role_title[role],
+                         ifelse(is.na(pixel_site),
+                                sprintf("%s, %.0f km from a bioassay",
+                                        country, nearest_km),
+                                paste(pixel_site, country, sep = ", "))),
          title = factor(title, levels = title))
 
 # the style of the dynamical-model time-series figures (R/summarise_model_fit.R,
-# R/fig_temporal_preds_net_use.R): theme_minimal, the pyrethroid blue, net use
-# as a thick grey line, percentages, no x label
+# R/fig_temporal_preds_net_use.R): theme_minimal, the pyrethroid blue,
+# percentages, no x label
 pyrethroid_blue <- "#56B1F7"
-net_grey <- grey(0.5)
 realisation_cols <- c("#E69F00", "#009E73", "#CC79A7")
 year_breaks <- seq(2000, 2030, by = 10)
 
@@ -250,18 +302,19 @@ pixel_year <- function(values, name) {
          year = rep(years, nrow(pixels)),
          !!name := as.vector(values))
 }
-# realisation draws: years x pixels x draws array (or pixels x draws matrix
-# for the static terms) at the chosen draws
-realisations <- function(values, which) {
+# the realisations: a years x pixels x realisations array (or pixels x
+# realisations matrix for the static terms)
+realisations <- function(values) {
   if (length(dim(values)) == 2) {
     values <- array(rep(values, each = length(years)),
                     c(length(years), dim(values)))
   }
-  bind_rows(lapply(seq_along(which), function(r) {
-    pixel_year(values[, , which[r]], "value") %>%
+  bind_rows(lapply(seq_len(dim(values)[3]), function(r) {
+    pixel_year(values[, , r], "value") %>%
       mutate(realisation = factor(r))
   }))
 }
+draws <- components$realisations
 
 bioassays <- train_k %>%
   filter(cell %in% pixels$cell) %>%
@@ -269,11 +322,6 @@ bioassays <- train_k %>%
          mortality = died / mosquito_number)
 
 # 4a. realisations ------------------------------------------------------------------
-
-# three joint draws, spread over the posterior of the dynamical model: draw d
-# pairs the dynamical draw d with the correction's latent draw d
-set.seed(5)
-which_draws <- sort(sample(n_draws, 3))
 
 row_plot <- function(data, ylab, geoms, y_scale = NULL, strip = FALSE,
                      bottom = FALSE) {
@@ -293,62 +341,57 @@ row_plot <- function(data, ylab, geoms, y_scale = NULL, strip = FALSE,
 realisation_colour <- scale_colour_manual(values = realisation_cols)
 zero_line <- geom_hline(yintercept = 0, colour = grey(0.6), linewidth = 0.3)
 
-m_mean <- pixel_year(apply(m, 1:2, mean), "value")
+m_mean <- pixel_year(components$m_mean, "value")
 
-p_nets <- row_plot(
-  pixel_year(t(nets), "value"), "LLIN use",
-  geom_line(aes(y = value), colour = net_grey, linewidth = 1),
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1),
-                     breaks = c(0, 0.5, 1)),
-  strip = TRUE)
 p_m <- row_plot(
-  realisations(m, which_draws), "dynamical\nlogit m",
+  realisations(draws$m), "Dynamical\nlogit m",
   list(geom_line(aes(y = value), data = m_mean, colour = "black",
                  linewidth = 0.6),
        geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
-       realisation_colour))
+       realisation_colour),
+  strip = TRUE)
 p_eta <- row_plot(
-  realisations(eta, which_draws), "annual\nanomaly η",
+  realisations(draws$eta), "Annual\nanomaly η",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.3,
                  alpha = 0.6),
        geom_point(aes(y = value, colour = realisation), size = 0.6),
        realisation_colour))
 p_xi <- row_plot(
-  realisations(xi, which_draws), "cumulative\nξ = Ση",
+  realisations(draws$xi), "Cumulative\nξ = Ση",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
 p_omega <- row_plot(
-  realisations(omega, which_draws), "static\nfield ω",
+  realisations(draws$omega), "Static\nfield ω",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
 p_lambda <- row_plot(
-  realisations(lambda, which_draws), "logit\nm+ω+ξ",
+  realisations(draws$lambda), "Logit\nm+ω+ξ",
   list(geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour))
 p_mort <- row_plot(
-  realisations(plogis(lambda), which_draws), "mortality",
+  realisations(plogis(draws$lambda)), "Mortality",
   list(geom_point(aes(y = mortality, size = mosquito_number),
                   data = bioassays, shape = 21, fill = grey(0.8),
                   colour = grey(0.35), stroke = 0.2, alpha = 0.7),
        geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour,
-       scale_size_area(max_size = 2.5)),
+       scale_size_area(max_size = 4)),
   scale_y_continuous(labels = scales::percent, limits = c(0, 1),
                      breaks = c(0, 0.5, 1)),
   bottom = TRUE)
 
-fig_realisations <- patchwork::wrap_plots(p_nets, p_m, p_eta, p_xi, p_omega,
+fig_realisations <- patchwork::wrap_plots(p_m, p_eta, p_xi, p_omega,
                                           p_lambda, p_mort, ncol = 1,
-                                          heights = c(1, 1.1, 1, 1.1, 0.8, 1.1,
+                                          heights = c(1.1, 1, 1.1, 0.8, 1.1,
                                                       1.2)) &
   theme(plot.margin = margin(1, 4, 1, 4))
 for (ext in c("png", "pdf")) {
   ggsave(file.path(figure_dir, sprintf("supp_components_realisations.%s", ext)),
          plot = fig_realisations,
-         bg = "white", width = 7.5, height = 8.4, dpi = 300,
+         bg = "white", width = 7.5, height = 7.4, dpi = 300,
          device = if (ext == "pdf") cairo_pdf else NULL)
 }
 
@@ -360,19 +403,19 @@ for (ext in c("png", "pdf")) {
 # (plogis(m + omega + xi), with the cut-posterior shift). u, p and sy are
 # observation noise, like the assay-level (beta-binomial) noise, so none is
 # included
-summarise_draws <- function(values, model) {
-  pixel_year(apply(values, 1:2, mean), "mean") %>%
-    mutate(lower = as.vector(apply(values, 1:2, quantile, 0.025)),
-           upper = as.vector(apply(values, 1:2, quantile, 0.975)),
+summarise_draws <- function(summary, model) {
+  pixel_year(summary$mean, "mean") %>%
+    mutate(lower = as.vector(summary$lower),
+           upper = as.vector(summary$upper),
            model = model)
 }
 intervals <- bind_rows(
-  summarise_draws(plogis(m), "dynamical model"),
-  summarise_draws(plogis(lambda), "two-stage model")
+  summarise_draws(components$intervals$dynamical, "Dynamical model"),
+  summarise_draws(components$intervals$two_stage, "Two-stage model")
 ) %>%
-  mutate(model = factor(model, c("dynamical model", "two-stage model")))
-model_cols <- c(`dynamical model` = grey(0.45),
-                `two-stage model` = pyrethroid_blue)
+  mutate(model = factor(model, c("Dynamical model", "Two-stage model")))
+model_cols <- c(`Dynamical model` = grey(0.45),
+                `Two-stage model` = pyrethroid_blue)
 
 p_int <- ggplot(intervals, aes(x = year)) +
   projection_shading +
@@ -384,29 +427,22 @@ p_int <- ggplot(intervals, aes(x = year)) +
   facet_wrap(~title, nrow = 1) +
   scale_fill_manual(values = model_cols, name = NULL) +
   scale_colour_manual(values = model_cols, name = NULL) +
-  scale_size_area(max_size = 2.5, guide = "none") +
+  scale_size_area(max_size = 4, guide = "none") +
   scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   x_scale +
   xlab(NULL) +
-  ylab("Susceptibility to deltamethrin") +
+  ylab("Mortality in deltamethrin bioassays") +
   base_theme +
   theme(legend.position = "top",
         legend.justification = "left",
         legend.margin = margin(0, 0, 0, 0),
         legend.box.spacing = unit(2, "pt"),
         axis.text.x = element_blank())
-p_int_nets <- row_plot(
-  pixel_year(t(nets), "value"), "LLIN use",
-  geom_line(aes(y = value), colour = net_grey, linewidth = 1),
-  scale_y_continuous(labels = scales::percent, limits = c(0, 1),
-                     breaks = c(0, 0.5, 1)),
-  bottom = TRUE)
-
-fig_intervals <- patchwork::wrap_plots(p_int, p_int_nets, ncol = 1, heights = c(3, 1))
+fig_intervals <- p_int + theme(axis.text.x = element_text())
 for (ext in c("png", "pdf")) {
   ggsave(file.path(figure_dir, sprintf("supp_components_intervals.%s", ext)),
          plot = fig_intervals,
-         bg = "white", width = 8, height = 4.5, dpi = 300,
+         bg = "white", width = 8, height = 3.6, dpi = 300,
          device = if (ext == "pdf") cairo_pdf else NULL)
 }
 report("figures written")

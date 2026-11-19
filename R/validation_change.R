@@ -107,6 +107,8 @@ pair_counts <- function(p, n_all) {
          pixel_insecticides = n_distinct(paste(p$cell, p$insecticide_type)),
          pixels = n_distinct(p$cell),
          median_gap = median(p$gap),
+         gap_05 = quantile(p$gap, 0.05, names = FALSE),
+         gap_95 = quantile(p$gap, 0.95, names = FALSE),
          share_of_all_pairs = nrow(p) / n_all)
 }
 counts <- pair_counts(filter(pairs, in_sample), n_all_gaps) %>%

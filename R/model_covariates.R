@@ -12,7 +12,7 @@
 #                 cube, transformed as design$init_pop says: "log", named
 #                 log_pop_2000 (the fits before the refit); otherwise pop_2000,
 #                 with no trend (init_pop_layer())
-#   all_crops     the "all crops" yield layer of crop_group_scaled.tif, as
+#   all_crops     the "all crops" production layer of crop_group_scaled.tif, as
 #                 log(x + 1e-4). The layer is very skewed (56% zeros, mean
 #                 0.003, sd 0.012), so standardised untransformed it reaches
 #                 47 sd at the data cells; 1e-4 is about the 10th percentile

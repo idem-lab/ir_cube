@@ -2,7 +2,10 @@
 
 # Analyse DHS/MIS survey data to approximate the proportion of single-AI LLINs
 # that have each of the major pyrethroids (deltamethrin, permethrin,
-# alpha-cypermethrin) as the active ingredient.
+# alpha-cypermethrin) as the active ingredient. These are the weights of
+# llin_effective (R/predict.R, R/two_stage_maps.R): from the nets recorded in
+# the household surveys of 2017-2022, deltamethrin 57%, permethrin 22% and
+# alpha-cypermethrin 21%.
 
 # load packages and functions
 source("R/packages.R")
