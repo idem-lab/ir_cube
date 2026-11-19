@@ -62,17 +62,21 @@ df <- ir_africa %>%
 # combinations, with a free fraction per combination. Two problems with using
 # that for the validation noise floor. It used 81 assays where the whole
 # replicated set has 9,420, and a single rho is badly misspecified: fitted
-# separately, the nine insecticide types range from 0.093 (Lambda-cyhalothrin)
-# to 0.256 (Alpha-cypermethrin), and heterogeneity *within* the pyrethroids
-# (I2 = 97%) exceeds that between classes. Pooling to the class level forces
-# Lambda-cyhalothrin and Alpha-cypermethrin to share 0.164, which overstates one
-# floor by 76% and understates the other by 36%.
+# separately (before the study-year effect), the nine insecticide types range
+# from 0.093 (Lambda-cyhalothrin) to 0.256 (Alpha-cypermethrin), and
+# heterogeneity *within* the pyrethroids (I2 = 97%) exceeds that between
+# classes. Pooling to the class level forces Lambda-cyhalothrin and
+# Alpha-cypermethrin to share 0.164, which overstates one floor by 76% and
+# understates the other by 36%.
 #
 # The model, for group g (a cell x year x insecticide combination) with assays
-# j, of insecticide type t in class c:
+# j, of insecticide type t in class c, each assay from study-year-type k(j)
+# of type t(k):
 #
-#   died_gj | p_g  ~ BetaBinomial(mosquito_number_gj, p_g, rho_t)
+#   died_gj | p_gj ~ BetaBinomial(mosquito_number_gj, p_gj, rho_t)
+#   logit(p_gj)    = logit(p_g) + s_k(j)
 #   p_g            ~ Beta(a0_t, b0_t)
+#   s_k            ~ Normal(0, sigma_study_t(k))
 #   logit(rho_t)   ~ Normal(mu_c, sigma_within)
 #   mu_c           ~ Normal(mu, sigma_between)
 #
@@ -108,6 +112,15 @@ n_groups <- length(group_keys)
 n_types <- length(type_names)
 n_classes <- length(class_names)
 
+# study-year of each bioassay (study x year, as in stage 2), separate for each
+# insecticide type
+study_year_keys <- unique(paste(replicated_all$insecticide_type,
+                                replicated_all$study, replicated_all$year))
+study_year_id <- match(paste(replicated_all$insecticide_type,
+                             replicated_all$study, replicated_all$year),
+                       study_year_keys)
+type_of_study_year <- type_id[match(seq_along(study_year_keys), study_year_id)]
+
 cat(sprintf("hierarchical rho: %i assays, %i groups, %i types, %i classes\n",
             nrow(replicated_all), n_groups, n_types, n_classes))
 
@@ -141,15 +154,24 @@ a0 <- beta_mean * beta_conc
 b0 <- (1 - beta_mean) * beta_conc
 probs <- beta(a0[type_of_group], b0[type_of_group], dim = n_groups)
 
+# a study-year effect on the logit of each bioassay's fraction, non-centred,
+# with an SD per insecticide type, so that rho is the noise between bioassays
+# of one study in a cell and year
+sigma_study <- normal(0, 1, truncation = c(0, Inf), dim = n_types)
+z_study <- normal(0, 1, dim = length(study_year_keys))
+study_effect <- sigma_study[type_of_study_year] * z_study
+p_assay <- ilogit(log(probs[group_id]) - log1p(-probs[group_id]) +
+                    study_effect[study_year_id])
+
 distribution(replicated_all$died) <- betabinomial_p_rho(
   N = replicated_all$mosquito_number,
-  p = probs[group_id],
+  p = p_assay,
   rho = rho_type[type_id])
 
-m <- model(rho_type, mu_class, sigma_within, sigma_between)
+m <- model(rho_type, mu_class, sigma_within, sigma_between, sigma_study)
 
 # initialised near the per-type maximum likelihood estimates, so the chains do
-# not have to find the posterior from the prior in a 3,700-parameter model
+# not have to find the posterior from the prior in a model this large
 rho_start <- c(`Alpha-cypermethrin` = 0.256, Bendiocarb = 0.131, DDT = 0.118,
                Deltamethrin = 0.155, Fenitrothion = 0.130,
                `Lambda-cyhalothrin` = 0.093, Malathion = 0.257,
@@ -173,15 +195,13 @@ start <- initials(
 # seeded, so the overdispersion estimates the whole pipeline scores against can
 # be reproduced from this script
 set.seed(2026 - 9 - 30)
-# Twice greta's default leapfrog steps (Lmin 5, Lmax 10). The binding
-# constraint is mixing in the hierarchy variances, not warmup: at the default
-# this fit reached worst Rhat 1.083 with minimum effective sample size 211 over
-# 16,000 post-warmup draws. Longer trajectories cost proportionally more time
-# per iteration but decorrelate those parameters. On the deduplicated bioassays
-# of #63, 4,000 draws per chain still left the hierarchy parameters at worst
-# Rhat 1.066 (rho_type at most 1.011), hence 16,000.
+# Three times greta's default leapfrog steps (Lmin 5, Lmax 10). The binding
+# constraint is mixing in the hierarchy variances, not warmup: longer
+# trajectories cost proportionally more time per iteration but decorrelate
+# those parameters. With the study-year effect, twice the default steps left
+# worst Rhat 1.051 over 16,000 post-warmup draws per chain.
 rho_draws <- mcmc(m, n_samples = 16000, warmup = 5000, chains = 4,
-                  sampler = hmc(Lmin = 10, Lmax = 20),
+                  sampler = hmc(Lmin = 15, Lmax = 30),
                   initial_values = replicate(4, start, simplify = FALSE))
 
 worst_rhat <- max(coda::gelman.diag(rho_draws, multivariate = FALSE,
@@ -201,6 +221,10 @@ rho_type_lower <- rho_summary$quantiles[paste0("rho_type[", seq_len(n_types), ",
 rho_type_upper <- rho_summary$quantiles[paste0("rho_type[", seq_len(n_types), ",1]"),
                                         "97.5%"]
 names(rho_type_mean) <- type_names
+cat("\nsigma_study by insecticide type:\n")
+sigma_study_rows <- paste0("sigma_study[", seq_len(n_types), ",1]")
+print(round(rho_summary$quantiles[sigma_study_rows, c("2.5%", "50%", "97.5%")],
+            3))
 
 # The joint draws, not only the summaries. The hierarchy correlates rho between
 # types, so rebuilding them as independent logit-normals from each type's
@@ -231,8 +255,11 @@ print(rho_hierarchical %>% mutate(across(where(is.numeric), ~ round(.x, 4))))
 # The check of rho-hat against replicate pairs, model-free: on the same
 # bioassays, one bioassay's noise variance as half the squared difference
 # between two at a pixel-year (per bioassay, averaged over its partners),
-# over the noise rho-hat implies (noise_floor_record()). Near 1 if rho-hat is
-# right: 1.01 (95% interval 0.92-1.11) over 9,424 bioassays in October 2026.
+# over the noise rho-hat implies (noise_floor_record()). Before the study-year
+# effect this was near 1: 1.01 (95% interval 0.92-1.11) over 9,424 bioassays
+# in October 2026. rho-hat is now the noise within one study, while the pairs
+# include bioassays of different studies: 1.09 (0.95-1.24) over 5,011
+# bioassays in November 2026.
 # Every n* (#40) and every noise floor in the validation rests on rho-hat.
 # Intervals resample pixels. Written to outputs/bioassay_rho_pair_check.csv
 source("R/validation_scoring.R")

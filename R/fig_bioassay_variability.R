@@ -1,7 +1,8 @@
 # Figure of the variability between replicate bioassays at the six most
 # sampled pixel-years of the LLIN pyrethroids, against the 95% sampling
-# intervals at 100 mosquitoes: beta-binomial at the type's overdispersion rho,
-# and binomial (as if the mosquitoes were independent).
+# intervals at 100 mosquitoes: beta-binomial at the type's overdispersion rho
+# between bioassays of one study, and binomial (as if the mosquitoes were
+# independent). Points are coloured by study.
 #
 #   Rscript R/fig_bioassay_variability.R
 #
@@ -27,16 +28,6 @@ rho <- setNames(rho$rho, rho$insecticide_type)
 insecticides_plot_small <- c("Deltamethrin",
                              "Permethrin",
                              "Alpha-cypermethrin")
-
-# the colours of these types in the full set of nine, ordered by class
-insecticides_plot <- df %>%
-  distinct(insecticide_type, insecticide_class) %>%
-  arrange(desc(insecticide_class), insecticide_type) %>%
-  pull(insecticide_type)
-colour_types <- scales::hue_pal(direction = -1)(9)
-colours_plot <- setNames(
-  colour_types[match(insecticides_plot_small, insecticides_plot)],
-  insecticides_plot_small)
 
 # the six pixel-year-types with the most bioassays, labelled by their site
 # (the most common site name among their records) and country, and year; and
@@ -85,17 +76,51 @@ df_most_sampled_stats <- df_most_sampled %>%
     betabinom_upper_100 = qbbinom(0.975, 100, alpha, beta) / 100
   )
 
-# one fill scale for the bands (in the legend) and the points' insecticide
-# colours (not in it)
-fill_values <- c(setNames(c(grey(0.9), grey(0.7)), interval_labels),
-                 colours_plot)
+# the fill scale for the bands
+fill_values <- setNames(c(grey(0.9), grey(0.7)), interval_labels)
+
+# each point coloured by its study, labelled by these names
+study_names <- c(
+  "mbogo 2016, Kenya" = "Mbogo (2016)",
+  "Kenya Medical Research Institute, Kenya" = "KEMRI",
+  "githinji 2020, Kenya" = "Githinji (2020)",
+  "Project IIR: Implications of insecticide resistance for vector control, Kenya" =
+    "Project IIR",
+  "cook 2018, Kenya" = "Cook (2018)",
+  "cook 2018, Benin" = "Cook (2018)",
+  "hessoudjossou 2024, Benin" = "Hessoudjossou (2024)",
+  "ismail 2018, Sudan" = "Ismail (2018)",
+  "National Malaria Programme, Sudan" = "Sudan NMCP",
+  "yahouedo 2016, Benin" = "Yahouedo (2016)")
+stopifnot(all(df_most_sampled$study %in% names(study_names)))
 
 set.seed(1)
-df_most_sampled %>%
+df_points <- df_most_sampled %>%
   # shuffle the x axes so the points don't overlap too much
   mutate(
-    x_random = sample(seq(0.2, 1.8, length.out = n()))
-  ) %>%
+    x_random = sample(seq(0.2, 1.8, length.out = n())),
+    study_name = unname(study_names[study]),
+    # the panels, in the order they are plotted
+    label = factor(label)
+  )
+
+# the studies in the order they appear from left to right: by panel, then by
+# their leftmost point. The colours are Paul Tol's muted palette, the most
+# distinct first, in order of appearance
+study_order <- df_points %>%
+  group_by(study_name) %>%
+  summarise(panel = min(as.integer(label)),
+            x = min(x_random[as.integer(label) == panel]),
+            .groups = "drop") %>%
+  arrange(panel, x) %>%
+  pull(study_name)
+study_colours <- setNames(
+  c("#332288", "#DDCC77", "#117733", "#CC6677", "#88CCEE", "#882255",
+    "#44AA99", "#AA4499", "#999933")[seq_along(study_order)],
+  study_order)
+stopifnot(!anyNA(study_colours))
+
+df_points %>%
   ggplot(
     aes(
       xmin = 0,
@@ -131,12 +156,33 @@ df_most_sampled %>%
   geom_point(
     aes(
       y = Susceptibility,
-      size = mosquito_number,
+      size = pmin(mosquito_number, 500),
       x = x_random,
-      fill = insecticide_type
+      colour = factor(study_name, levels = study_order)
     ),
-    shape = 21,
-    show.legend = c(fill = FALSE, size = TRUE)
+    shape = 16
+  ) +
+  # the points' black outlines: a second layer, because the fill scale is the
+  # bands' and the colour scale the studies'
+  geom_point(
+    aes(
+      y = Susceptibility,
+      size = pmin(mosquito_number, 500),
+      x = x_random
+    ),
+    shape = 1,
+    show.legend = FALSE
+  ) +
+  scale_colour_manual(
+    values = study_colours,
+    name = "Study"
+  ) +
+  # point areas proportional to the number tested, capped at 500 so that the
+  # size legend spans the common numbers tested
+  scale_size_area(
+    breaks = c(100, 250, 500),
+    labels = c("100", "250", "500+"),
+    limits = c(0, 500)
   ) +
   facet_wrap(~label,
              nrow = 1,
@@ -156,7 +202,9 @@ df_most_sampled %>%
   labs(x = NULL, y = "Mortality") +
   theme_minimal() +
   guides(
-    size = guide_legend(title = "No. tested")
+    size = guide_legend(title = "No. tested", order = 2),
+    colour = guide_legend(order = 3, override.aes = list(size = 3)),
+    fill = guide_legend(order = 1)
   ) +
   theme(
     axis.text.x = element_blank(),
@@ -171,6 +219,6 @@ ggsave(
   "figures/bioassay_variability.png",
   bg = "white",
   scale = 0.9,
-  width = 8,
+  width = 9.5,
   height = 6
 )
