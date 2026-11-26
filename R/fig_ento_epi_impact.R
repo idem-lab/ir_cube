@@ -1,21 +1,39 @@
 # Plot the decline (2000-2025 and projected 2025-2030) in the effectiveness of
-# ITNs across Africa due to IR. Plot the decline in both direct entomological
-# protection, and in epidemiological outcomes, based on Imperial and MAP models.
+# pyrethroid-only ITNs across Africa due to IR, its cost to the effective
+# coverage of the nets in use, and where pyrethroid-only or next-generation
+# nets are the better buy (#75). Effectiveness is the relative epidemiological
+# effectiveness g*(k) of Symons et al. (below).
 
 # four panel plot:
 
 # A) Declining effectiveness of nets: timeseries with ribbon of uncertainty
-# (from Tas' estimates) giving average effectiveness of nets across Africa,
-# relative to a fully susceptible population
+# (from Tas' estimates) giving the effectiveness, relative to a fully
+# susceptible population, that a pyrethroid-only LLIN would have for each
+# person at risk, whether or not nets are in use there: averaged across Africa
+# over the population at risk (population times PfPR, both in 2000, fixed over
+# time)
 
-# B) Declining impact of net distribution:
-# plot the 'no resistance' line in the second plot
-# add ribbon of uncertainty on Tas'
+# B) Effective coverage: net use times effectiveness, summed over three groups
+# of net types (R/prep_net_use_pyrethroid.R) and averaged across Africa over
+# the population at risk of each year (the year's population times PfPR in
+# 2000), as stacked areas: dual-AI nets, PBO nets, then pyrethroid-only nets
+# (LLINs, and conventional ITNs counting as 0.25 of an LLIN). PBO and dual-AI
+# nets are assumed to be fully effective (effectiveness 1), losing none of it
+# to resistance. The line above the stack is the counterfactual without
+# resistance, all nets in use fully effective; the gap between them is the
+# coverage lost to resistance
 
-# C) Spatial variation in effectiveness: plot quantiles of IR (2025) on a map
+# C) Spatial variation in effectiveness: classes of 2025 effectiveness on a
+# map, by whether pyrethroid-only or dual-AI nets give more effective coverage
+# for the same budget (break_even_effectiveness()), with the delivery cost per
+# net from two mass campaigns in Mali (Scates et al. 2020)
 
-# D) Significant spatial variation in impact of net distributions:
-# plot overall impact of nets as averages in these quantiles
+# D) Effectiveness over time within each class, as A
+
+# After the last year of net use data (2025), use and the mix of net types are
+# held at that year's values. The ribbons are 50% intervals of Symons et al.'s
+# parameter uncertainty, conditional on the posterior mean susceptibility
+# maps. The numbers for the text are printed after the panels' data.
 
 
 
@@ -34,12 +52,12 @@ source("R/figure_cache.R")
 # - Country borders for plotting
 # - pf transmission limits and water mask for plotting
 # - IR layers
-# - MAP net use (to manually project to 2030)
+# - MAP net use by type (to manually project to 2030)
 # - MAP PR 2000 baseline
 # - MAP populations by year (projected to 2030)
 # other:
 # - Symons epi impact estimate
-# - Nash/Sherrard-Smith killing effect estimates
+# - net prices and delivery costs (data/raw/costs/net_costs.csv)
 
 # years to plot for
 years_plot <- 2000:2030
@@ -48,11 +66,18 @@ years_plot <- 2000:2030
 borders <- readRDS("data/clean/country_borders.RDS")
 
 
-# The panels' data: effectiveness and impact over time, Africa-wide and in
-# the bands of 2025 effectiveness, and the bands themselves (wrapped, to
-# be saved), from the two-stage IR maps, the model's net use, PfPR 2000 and
-# population. n_sims draws of the Symons et al. coefficients, from `seed`
-compute_epi_impact <- function(years_plot, n_sims, seed) {
+# The panels' data: effectiveness and effective coverage over time,
+# Africa-wide and in the bands of 2025 effectiveness, the bands themselves
+# (wrapped, to be saved), and the numbers for the text, from the two-stage IR
+# maps, net use by type (net_type_files), PfPR 2000 and population. n_sims
+# draws of the Symons et al. coefficients, from `seed`; break_even, e*(D) at
+# the lowest and highest delivery cost D
+compute_epi_impact <- function(years_plot, n_sims, seed, net_type_files,
+                               break_even) {
+  # write the cubes terra computes to temporary files: held in memory, they
+  # peaked at 26 GB; on disk, at 8 GB, for a minute and a half longer
+  terraOptions(todisk = TRUE)
+
   # load mask with limits of transmission and water bodies for plotting
   pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
@@ -61,15 +86,19 @@ compute_epi_impact <- function(years_plot, n_sims, seed) {
   ir <- rast(ir_map_files("llin_effective", years_plot))
   names(ir) <- years_plot
 
-  # - net use as the model has it (net_use_file(), R/model_covariates.R): MITN
-  # run 06 use of the nets that select for pyrethroid resistance, a conventional
-  # ITN counting as 0.25 of an LLIN (R/prep_net_use_pyrethroid.R), carried
-  # forward from its last year to 2030
-  nets <- rast(net_use_file(selection_design()))
-  names(nets) <- str_remove(names(nets), "^nets_")
-  latest_nets <- max(as.numeric(names(nets)))
+  # - net use by type (net_type_files), carried forward from its last year to
+  # 2030, which holds both use and the mix of types
+  nets_by_type <- lapply(net_type_files, function(file) {
+    nets <- rast(file)
+    names(nets) <- str_remove(names(nets), "^nets_")
+    nets
+  })
+  latest_nets <- max(as.numeric(names(nets_by_type$pyrethroid)))
   end_year <- max(years_plot)
-  nets <- post_pad_cube(nets, end_year)
+  nets_by_type <- lapply(nets_by_type, post_pad_cube, end_year)
+  stopifnot(all(vapply(nets_by_type, function(nets) {
+    identical(names(nets), names(ir))
+  }, logical(1))))
 
   # - MAP PR 2000 baseline
   pr2000 <- rast("data/clean/pfpr_2000.tif")
@@ -155,8 +184,10 @@ compute_epi_impact <- function(years_plot, n_sims, seed) {
 
   # perform calculations:
 
-  # define the weights for net effectiveness (weight by where nets are in use) and
-  # population-level impact (weight by population at risk)
+  # define the weights for net effectiveness and effective coverage, from the
+  # population at risk (potential infected population, in absence of
+  # interventions): population times PfPR in 2000, at the cells with a
+  # susceptibility map (all but 1e-5 of the population at risk)
 
   # convert a raster layer into spatial weights (pixels sum to 1) to get averages
   # over space
@@ -165,24 +196,33 @@ compute_epi_impact <- function(years_plot, n_sims, seed) {
     x / total
   }
 
-  # cube of net use weights
-  net_weights <- sapp(nets, normalise)
+  population_at_risk <- terra::mask(pop_all * pr2000, ir)
 
-  # cube of population at risk (potential infected population, in absence of
-  # interventions) weights
-  infection_weights <- sapp(pop_all * pr2000, normalise)
+  # cube of population at risk weights, by year, for effective coverage
+  infection_weights <- sapp(population_at_risk, normalise)
+
+  # cube of population at risk weights fixed at 2000, for net effectiveness:
+  # the effectiveness a pyrethroid-only LLIN would have for each person at
+  # risk, whether or not nets are in use there, so its trend is that of
+  # resistance alone
+  risk_weights <- rep(normalise(population_at_risk[["2000"]]), nlyr(ir))
+  names(risk_weights) <- names(ir)
 
 
-  # First, get the average net use across Africa, weighted by population at risk.
-  # This gives us the fraction of the maximum possible impact our net
-  # distributions have, in the absence of resistance. If net use was 100% for all
-  # populations at risk, this would equal 1. It is lower due to imperfect net
-  # coverage (but not due to IR).
-  net_impact_no_ir <- global(
-    x = nets * infection_weights,
-    fun = "sum",
-    na.rm = TRUE
-  )
+  # Effective coverage: net use times effectiveness, averaged across Africa
+  # over the population at risk, for each group of net types. PBO and dual-AI
+  # nets are assumed to be fully effective (effectiveness 1), losing none of it
+  # to resistance; pyrethroid-only nets have g*(k). Without resistance, all
+  # nets would be fully effective, and effective coverage would be the average
+  # net use. If net use was 100% for all populations at risk, this would equal
+  # 1. It is lower due to imperfect net coverage (but not due to IR).
+  coverage <- function(x) {
+    global(x * infection_weights, fun = "sum", na.rm = TRUE)$sum
+  }
+  coverage_pbo <- coverage(nets_by_type$pbo)
+  coverage_dual_ai <- coverage(nets_by_type$dual_ai)
+  coverage_no_ir <- coverage(nets_by_type$pyrethroid) + coverage_pbo +
+    coverage_dual_ai
 
 
   # Now average epi impacts, accounting for IR (both per net and at population
@@ -193,98 +233,78 @@ compute_epi_impact <- function(years_plot, n_sims, seed) {
   relative_epi_impact_mean <- terra::app(ir, epi_function_mean)
   names(relative_epi_impact_mean) <- names(ir)
 
-  # average the epi impact of the nets in use across Africa to get the temporal
-  # trends in impact of each net (using the posterior mean function)
-  average_epi_impact_mean <- global(
-    x = relative_epi_impact_mean * net_weights,
-    fun = "sum",
-    na.rm = TRUE
-  )
-
-  # average the epi impact of the whole net distribution program across Africa to
-  # get the temporal trends in impact of net distribution (using the posterior
+  # average the epi impact of a net across Africa, over the population at
+  # risk, to get the temporal trends in impact of each net (using the posterior
   # mean function)
-  net_impact_epi_impact_mean <- global(
-    x = nets * relative_epi_impact_mean * infection_weights,
+  average_epi_impact_mean <- global(
+    x = relative_epi_impact_mean * risk_weights,
     fun = "sum",
     na.rm = TRUE
   )
 
-
-  # compute population-at-risk-weighted quantiles of 2025 LLIN effectiveness, to
-  # divide up the map into different regions
-  vals <- infection_weights[["2025"]][]
-  cells <- which(!is.na(vals) & vals > 0)
-
-  impact_2025 <- relative_epi_impact_mean[["2025"]][cells][, 1]
-  infection_weights_2025 <- infection_weights[["2025"]][cells][, 1]
-
-  # n_bands <- 3
-  # cuts <- seq(0, 1, length.out = n_bands + 1)
-  cuts <- c(0, 0.5, 0.9, 1)
-  quants <- Hmisc::wtd.quantile(x = impact_2025,
-                                weights = infection_weights_2025,
-                                probs = cuts,
-                                normwt = TRUE)
-
-  # redefine endpoints, in case there are out-of-bounds effectiveness results
-  # outside PAR
-  n_quants <- length(quants)
-  quants[1] <- 0
-  quants[n_quants] <- 1
-
-  # do reclassification on ir_2025 to map the bands. Do 'right = NA' to include
-  # both upper and lower bounds
-  rcl <- cbind(from = quants[-n_quants],
-               to = quants[-1],
-               becomes = seq_len(n_quants - 1))
-  bands <- terra::classify(relative_epi_impact_mean[["2025"]],
-                           rcl,
-                           right = NA)
-  names <- data.frame(
-    from = 3:1,
-    to = c("highest", "medium", "lowest")
+  # the effective coverage of pyrethroid-only nets across Africa (using the
+  # posterior mean function)
+  coverage_pyrethroid_mean <- coverage(
+    nets_by_type$pyrethroid * relative_epi_impact_mean
   )
-  levels(bands) <- names
 
-  # create net weights and infection weights subsetted to each of these bands, to
+
+  # classes of 2025 LLIN effectiveness, to divide up the map into regions by
+  # which nets give more effective coverage for a fixed budget
+  # (break_even_effectiveness()): pyrethroid-only nets where their
+  # effectiveness is above the break-even e*(D) at the highest delivery cost
+  # D, next-generation nets where it is below e*(D) at the lowest, and it
+  # depends on the delivery cost between. break_even holds e*(D) at the
+  # lowest and highest D
+  effectiveness_2025 <- relative_epi_impact_mean[["2025"]]
+  bands <- 1 + (effectiveness_2025 >= break_even[["low"]]) +
+    (effectiveness_2025 > break_even[["high"]])
+  levels(bands) <- data.frame(
+    id = 1:3,
+    band = c("next_generation", "depends", "pyrethroid")
+  )
+  band_names <- c("pyrethroid", "depends", "next_generation")
+
+  # create population at risk weights subsetted to each of these bands, to
   # compute effectiveness over time in each
-
-  nets_highest <- nets * (bands == "highest")
-  net_weights_highest <- sapp(nets_highest, normalise)
-
-  nets_medium <- nets * (bands == "medium")
-  net_weights_medium <- sapp(nets_medium, normalise)
-
-  nets_lowest <- nets * (bands == "lowest")
-  net_weights_lowest <- sapp(nets_lowest, normalise)
+  risk_weights_bands <- lapply(band_names, function(band) {
+    sapp(risk_weights * (bands == band), normalise)
+  })
+  names(risk_weights_bands) <- band_names
 
   # compute posterior means for these
-  average_epi_impact_mean_highest <- global(
-    x = relative_epi_impact_mean * net_weights_highest,
-    fun = "sum",
-    na.rm = TRUE
+  average_epi_impact_mean_bands <- lapply(risk_weights_bands, function(weights) {
+    global(
+      x = relative_epi_impact_mean * weights,
+      fun = "sum",
+      na.rm = TRUE
+    )$sum
+  })
+
+  # the bands' shares of the population at risk in 2025, and their mean
+  # effectiveness over it in 2025
+  population_at_risk_2025 <- population_at_risk[["2025"]]
+  weighted_total <- function(x) {
+    global(x, "sum", na.rm = TRUE)$sum
+  }
+  band_summary <- tibble(
+    band = band_names,
+    people = vapply(band_names, function(band_name) {
+      weighted_total(population_at_risk_2025 * (bands == band_name))
+    }, numeric(1)),
+    effectiveness = vapply(band_names, function(band_name) {
+      weighted_total(population_at_risk_2025 * (bands == band_name) *
+                       effectiveness_2025)
+    }, numeric(1)) / people,
+    share = people / weighted_total(population_at_risk_2025)
   )
 
-  average_epi_impact_mean_medium <- global(
-    x = relative_epi_impact_mean * net_weights_medium,
-    fun = "sum",
-    na.rm = TRUE
-  )
-
-  average_epi_impact_mean_lowest <- global(
-    x = relative_epi_impact_mean * net_weights_lowest,
-    fun = "sum",
-    na.rm = TRUE
-  )
-
-  # 
-  # plot(average_epi_impact_mean_lowest$sum ~ years_plot,
-  #      ylim = c(0, 1),
-  #      type = "l")
-  # lines(average_epi_impact_mean_medium$sum ~ years_plot)
-  # lines(average_epi_impact_mean_highest$sum ~ years_plot)
-  # abline(v = latest_nets)
+  # each type's share of net use in 2024, Africa-wide: the people using a net
+  # of the type over the people using any
+  use_2024 <- vapply(nets_by_type, function(nets) {
+    weighted_total(nets[["2024"]] * pop_all[["2024"]])
+  }, numeric(1))
+  type_shares_2024 <- use_2024 / sum(use_2024)
 
   # Now do the same under a Monte Carlo simulation, to get credible intervals on
   # these. As g*(k) is linear in k, a weighted sum of it over pixels is
@@ -302,110 +322,234 @@ compute_epi_impact <- function(years_plot, n_sims, seed) {
     rownames(impact) <- years_plot
     impact
   }
-  individual_net_impact_sims <- simulate_impact(net_weights)
-  individual_net_impact_sims_highest <- simulate_impact(net_weights_highest)
-  individual_net_impact_sims_medium <- simulate_impact(net_weights_medium)
-  individual_net_impact_sims_lowest <- simulate_impact(net_weights_lowest)
-  net_distribution_impact_sims <- simulate_impact(nets * infection_weights)
+  individual_net_impact_sims <- simulate_impact(risk_weights)
+  individual_net_impact_sims_bands <- lapply(risk_weights_bands,
+                                             simulate_impact)
+  # all nets' effective coverage, the PBO and dual-AI nets' being certain
+  coverage_sims <- simulate_impact(nets_by_type$pyrethroid * infection_weights) +
+    coverage_pbo + coverage_dual_ai
 
   # check: at the posterior mean coefficients (r = -0.46), the sums give what
   # the map does
-  mean_check <- weighted_sums(net_weights)
+  mean_check <- weighted_sums(risk_weights)
   stopifnot(isTRUE(all.equal(
     mean_check$w - 0.46 * (mean_check$w - mean_check$wk),
     average_epi_impact_mean$sum, tolerance = 1e-6)))
 
 
-  # compute credible intervals of each of these over time
-  individual_net_impact_cis <- apply(individual_net_impact_sims,
-                                     1,
-                                     quantile,
-                                     c(0.25, 0.75))
-  individual_net_impact_cis_highest <- apply(individual_net_impact_sims_highest,
-                                            1,
-                                            quantile,
-                                            c(0.25, 0.75))
-  individual_net_impact_cis_medium <- apply(individual_net_impact_sims_medium,
-                                            1,
-                                            quantile,
-                                            c(0.25, 0.75))
-  individual_net_impact_cis_lowest <- apply(individual_net_impact_sims_lowest,
-                                            1,
-                                            quantile,
-                                            c(0.25, 0.75))
-  net_distribution_impact_cis <- apply(net_distribution_impact_sims,
-                                       1,
-                                       quantile,
-                                       c(0.25, 0.75))
+  # compute credible intervals of each of these over time: the 50% intervals
+  # the panels show, and 95% intervals for the text
+  intervals <- function(sims) {
+    cis <- apply(sims, 1, quantile, c(0.25, 0.75, 0.025, 0.975))
+    tibble(
+      lower = cis[1, ],
+      upper = cis[2, ],
+      lower_95 = cis[3, ],
+      upper_95 = cis[4, ]
+    )
+  }
 
-  # panel A: the effectiveness of the nets in use over time
+  # panel A: the effectiveness of a net over time
   panel_a_data <- tibble(
     year = years_plot,
-    mean = average_epi_impact_mean$sum,
-    upper = individual_net_impact_cis[1, ],
-    lower = individual_net_impact_cis[2, ]
-  )
+    mean = average_epi_impact_mean$sum
+  ) %>%
+    bind_cols(intervals(individual_net_impact_sims))
 
-  # panel B: the impact of net distribution, with and without IR
+  # panel B: effective coverage by net type, its total and interval, and the
+  # counterfactual without IR
   panel_b_data <- tibble(
     year = years_plot,
-    mean = net_impact_epi_impact_mean$sum,
-    upper = net_distribution_impact_cis[1, ],
-    lower = net_distribution_impact_cis[2, ],
-    mean_no_ir = net_impact_no_ir$sum  
-  )
-
-  # panel C: the bands, within the limits of transmission
-  bands_mask <- terra::mask(bands, pf_water_mask)
-
-  # panel D: the effectiveness of the nets in use in each band
-  panel_d_data <- tibble(
-    year = years_plot,
-    mean_highest = average_epi_impact_mean_highest$sum,
-    upper_highest = individual_net_impact_cis_highest[1, ],
-    lower_highest = individual_net_impact_cis_highest[2, ],
-    mean_medium = average_epi_impact_mean_medium$sum,
-    upper_medium = individual_net_impact_cis_medium[1, ],
-    lower_medium = individual_net_impact_cis_medium[2, ],
-    mean_lowest = average_epi_impact_mean_lowest$sum,
-    upper_lowest = individual_net_impact_cis_lowest[1, ],
-    lower_lowest = individual_net_impact_cis_lowest[2, ],
+    pyrethroid = coverage_pyrethroid_mean,
+    pbo = coverage_pbo,
+    dual_ai = coverage_dual_ai,
+    mean = pyrethroid + pbo + dual_ai,
+    mean_no_ir = coverage_no_ir
   ) %>%
-    pivot_longer(
-      cols = starts_with(c("mean", "upper", "lower")),
-      names_pattern = "(.*)_(.*)",
-      names_to = c("statistic", "band"),
-      values_to = "effectiveness"
+    bind_cols(intervals(coverage_sims))
+
+  # panel C: the bands, within the limits of transmission, in memory to be
+  # saved (not in a temporary file)
+  bands_mask <- terra::toMemory(terra::mask(bands, pf_water_mask))
+
+  # panel D: the effectiveness of a net in each band
+  panel_d_data <- bind_rows(lapply(band_names, function(band_name) {
+    tibble(
+      year = years_plot,
+      band = band_name,
+      mean = average_epi_impact_mean_bands[[band_name]]
     ) %>%
-    pivot_wider(
-      names_from = statistic,
-      values_from = effectiveness
-    ) %>%
+      bind_cols(intervals(individual_net_impact_sims_bands[[band_name]]))
+  })) %>%
     mutate(
       band = factor(band,
-                    levels = c("highest",
-                               "medium",
-                               "lowest"))
+                    levels = band_names)
     )
 
   list(panel_a_data = panel_a_data,
        panel_b_data = panel_b_data,
        panel_d_data = panel_d_data,
        bands = terra::wrap(bands_mask),
+       band_summary = band_summary,
+       type_shares_2024 = type_shares_2024,
        latest_nets = latest_nets)
 }
 
+# The break-even effectiveness of a pyrethroid-only net (#75). For a fixed
+# budget, a net of price P with delivery cost D (the cost of delivering a net,
+# without the net itself) buys budget / (P + D) nets. A pyrethroid-only net of
+# relative effectiveness e then gives more effective coverage than a dual-AI
+# net where e / (P_pyr + D) > 1 / (P_dual + D), that is where
+#   e > e*(D) = (P_pyr + D) / (P_dual + D).
+# This assumes a fixed budget, the same delivery cost for every net type,
+# dual-AI nets fully effective, and effective coverage as the outcome
+break_even_effectiveness <- function(delivery, price_pyrethroid, price_dual_ai) {
+  (price_pyrethroid + delivery) / (price_dual_ai + delivery)
+}
+
+# net prices, campaign costs and CPI, with their sources
+net_costs <- read_csv("data/raw/costs/net_costs.csv", show_col_types = FALSE)
+cost_value <- function(quantity, item) {
+  value <- net_costs$value[net_costs$quantity == quantity &
+                             net_costs$item == item]
+  stopifnot(length(value) == 1)
+  value
+}
+
+# The delivery cost per net in the mass campaigns of Scates et al. 2020, in
+# Segou and Bamako, Mali. They report the total economic cost in USD and in
+# international dollars (Int$), not the nets' part of it. Nets are tradable
+# goods, so cost the same in both; all other costs are converted at purchasing
+# power parity, k times higher in Int$. With the same net cost N per net at
+# both sites, a site's cost per net is N + D in USD and N + k D in Int$, so k
+# is the ratio of the sites' differences in Int$ and in USD, and
+# D = (Int$ - USD) / (k - 1). Inflated from 2016 to 2026 USD with US CPI-U
+campaigns <- tibble(site = c("segou", "bamako")) %>%
+  mutate(
+    usd = map_dbl(site, ~ cost_value("campaign_cost_usd", .x)),
+    int = map_dbl(site, ~ cost_value("campaign_cost_int", .x)),
+    nets = map_dbl(site, ~ cost_value("nets_distributed", .x)),
+    usd = usd / nets,
+    int = int / nets
+  )
+ppp_ratio <- diff(campaigns$int) / diff(campaigns$usd)
+inflation <- cost_value("cpi", "2026") / cost_value("cpi", "2016")
+campaigns <- campaigns %>%
+  mutate(
+    delivery_2016 = (int - usd) / (ppp_ratio - 1),
+    net_2016 = usd - delivery_2016,
+    delivery = delivery_2016 * inflation
+  )
+delivery_range <- c(low = min(campaigns$delivery),
+                    high = max(campaigns$delivery))
+break_even <- break_even_effectiveness(
+  delivery = delivery_range,
+  price_pyrethroid = cost_value("net_price", "pyrethroid_only"),
+  price_dual_ai = cost_value("net_price", "dual_ai")
+)
+
+# net use by type (R/prep_net_use_pyrethroid.R): MITN run 06 use times each
+# group's share of the net crop in the admin 1 unit. The pyrethroid-only nets
+# are the model's (net_use_file(), R/model_covariates.R): LLINs, and
+# conventional ITNs counting as 0.25 of an LLIN
+net_type_files <- c(pyrethroid = net_use_file(selection_design()),
+                    pbo = "data/clean/net_use_pbo_cube.tif",
+                    dual_ai = "data/clean/net_use_dual_ai_cube.tif")
+
 epi <- cached_figure_data(
   "temporary/fig_ento_epi_impact.rds", compute_epi_impact,
-  args = list(years_plot = years_plot, n_sims = 1000, seed = 2026),
+  args = list(years_plot = years_plot, n_sims = 1000, seed = 2026,
+              net_type_files = net_type_files, break_even = break_even),
   sources = c("R/packages.R", "R/functions.R", "R/model_covariates.R"),
-  inputs = c(ir_map_files("llin_effective", years_plot), "data/clean")
+  inputs = c(ir_map_files("llin_effective", years_plot), net_type_files,
+             "data/clean/pfpr_water_mask.tif", "data/clean/pfpr_2000.tif",
+             "data/clean/pop_cube.tif", "data/clean/pop_cube_future.tif")
 )
 panel_a_data <- epi$panel_a_data
 panel_b_data <- epi$panel_b_data
 panel_d_data <- epi$panel_d_data
 bands_mask <- terra::unwrap(epi$bands)
 latest_nets <- epi$latest_nets
+
+
+# numbers for the text --------------------------------------------------------
+
+# percentages: a mean with its 50% and 95% intervals
+with_intervals <- function(mean, lower, upper, lower_95, upper_95) {
+  sprintf("%.1f [50%%: %.1f, %.1f; 95%%: %.1f, %.1f]", 100 * mean,
+          100 * lower, 100 * upper, 100 * lower_95, 100 * upper_95)
+}
+
+cat("\nAfrica-wide effective coverage (% of the population at risk, as panel B;",
+    "pyrethroid-only nets at the posterior mean of Symons et al.):\n")
+panel_b_data %>%
+  filter(year %in% c(2017, 2024)) %>%
+  mutate(lost = mean_no_ir - mean) %>%
+  rowwise() %>%
+  mutate(
+    text = paste0(
+      year, ": pyrethroid-only ", sprintf("%.1f", 100 * pyrethroid),
+      ", PBO ", sprintf("%.1f", 100 * pbo),
+      ", dual-AI ", sprintf("%.1f", 100 * dual_ai),
+      "\n  total ", with_intervals(mean, lower, upper, lower_95, upper_95),
+      "\n  no resistance ", sprintf("%.1f", 100 * mean_no_ir),
+      "\n  lost to resistance (percentage points) ",
+      with_intervals(lost, mean_no_ir - upper, mean_no_ir - lower,
+                     mean_no_ir - upper_95, mean_no_ir - lower_95),
+      "\n  lost to resistance (% of no resistance) ",
+      with_intervals(lost / mean_no_ir, 1 - upper / mean_no_ir,
+                     1 - lower / mean_no_ir, 1 - upper_95 / mean_no_ir,
+                     1 - lower_95 / mean_no_ir)
+    )
+  ) %>%
+  pull(text) %>%
+  cat(sep = "\n")
+
+cat("\nEffectiveness of a pyrethroid-only LLIN, weighted by the population at",
+    "risk in 2000 (%, panel A):\n")
+panel_a_data %>%
+  filter(year %in% c(2017, 2024, 2030)) %>%
+  mutate(text = paste0(year, ": ", with_intervals(mean, lower, upper,
+                                                  lower_95, upper_95))) %>%
+  pull(text) %>%
+  cat(sep = "\n")
+
+cat("\nShares of net use in 2024, Africa-wide (% of the people using a net,",
+    "conventional ITNs counting 0.25):\n")
+cat(sprintf("%s %.1f", names(epi$type_shares_2024),
+            100 * epi$type_shares_2024), sep = "\n")
+
+cat("\nDelivery cost per net (USD per net distributed; Scates et al. 2020):",
+    sprintf("\n  PPP ratio k %.3f, net cost %s (2016 USD)", ppp_ratio,
+            paste(sprintf("%.3f", campaigns$net_2016), collapse = ", ")),
+    sprintf("\n  %s: %.2f (2016 USD), %.2f (2026 USD)", campaigns$site,
+            campaigns$delivery_2016, campaigns$delivery),
+    sprintf("\n  CPI 2026 / 2016: %.4f", inflation), "\n")
+cat(sprintf("D_low %.2f, D_high %.2f (2026 USD); e*(D_low) %.4f, e*(D_high) %.4f\n",
+            delivery_range[["low"]], delivery_range[["high"]],
+            break_even[["low"]], break_even[["high"]]))
+
+cat("\nClasses of 2025 effectiveness (share: % of the population at risk in",
+    "2025; effectiveness: its mean over them, %):\n")
+epi$band_summary %>%
+  mutate(text = sprintf("%s: share %.1f, effectiveness %.1f", band,
+                        100 * share, 100 * effectiveness)) %>%
+  pull(text) %>%
+  cat(sep = "\n")
+
+# the gain in effective coverage from buying pyrethroid-only instead of dual-AI
+# nets with the same budget, where pyrethroid-only nets are the better buy:
+# (P_dual + D) / (P_pyr + D) e - 1, linear in e, so its mean over the
+# population at risk is that at the class's mean effectiveness
+pyrethroid_better <- epi$band_summary %>%
+  filter(band == "pyrethroid")
+gain <- (cost_value("net_price", "dual_ai") + delivery_range) /
+  (cost_value("net_price", "pyrethroid_only") + delivery_range) *
+  pyrethroid_better$effectiveness - 1
+cat(sprintf(paste("Gain in effective coverage from pyrethroid-only nets, where",
+                  "they are the better buy (%% of that from dual-AI nets): %.1f",
+                  "at D_low, %.1f at D_high\n"),
+            100 * gain[["low"]], 100 * gain[["high"]]))
 
 
 # panel A: Declining effectiveness of nets
@@ -471,10 +615,37 @@ panel_a <- ggplot(
   theme_minimal()
 
 
-# B) Declining impact of net distribution
-# plot the 'no resistance' line in the second plot
-# add ribbon of uncertainty on Tas'
+# B) Effective coverage by net type: stacked areas of dual-AI, PBO, then
+# pyrethroid-only nets, with the interval of the total, and the line of the
+# counterfactual without resistance above. The gap between the line and the
+# top of the stack is the coverage lost to resistance
 
+net_type_labels <- c(pyrethroid = "Pyrethroid-only",
+                     pbo = "PBO",
+                     dual_ai = "Dual-AI")
+net_type_cols <- c(pyrethroid = "#56B1F7",
+                   pbo = "#E69F00",
+                   dual_ai = "#009E73")
+
+# the bands of the stack, from the bottom
+panel_b_stack <- panel_b_data %>%
+  select(year, dual_ai, pbo, pyrethroid) %>%
+  pivot_longer(
+    cols = -year,
+    names_to = "type",
+    values_to = "coverage"
+  ) %>%
+  mutate(
+    type = factor(type,
+                  levels = c("dual_ai", "pbo", "pyrethroid"))
+  ) %>%
+  arrange(year, type) %>%
+  group_by(year) %>%
+  mutate(
+    top = cumsum(coverage),
+    bottom = top - coverage
+  ) %>%
+  ungroup()
 
 # split into past and future, both including the latest year of data so there is
 # no break in lines or ribbons
@@ -484,6 +655,16 @@ panel_b_data_past <- panel_b_data %>%
   )
 
 panel_b_data_future <- panel_b_data %>%
+  filter(
+    year >= latest_nets
+  )
+
+panel_b_stack_past <- panel_b_stack %>%
+  filter(
+    year <= latest_nets
+  )
+
+panel_b_stack_future <- panel_b_stack %>%
   filter(
     year >= latest_nets
   )
@@ -504,7 +685,13 @@ panel_b <- ggplot(
   scale_y_continuous(
     labels = scales::percent,
     limits = c(0, 0.6),
-    name = "Impact of LLIN distribution"
+    name = "Effective coverage"
+  ) +
+  scale_fill_manual(
+    values = net_type_cols,
+    labels = net_type_labels,
+    breaks = c("pyrethroid", "pbo", "dual_ai"),
+    name = NULL
   ) +
   # vertical dividing line for past and future
   geom_vline(
@@ -512,54 +699,86 @@ panel_b <- ggplot(
     color = grey(0.6),
     linetype = 2
   ) +
-  # net impact with no IR, past then future
-  geom_line(
-    data = panel_b_data_past,
+  # the stack, past then future; future at half the alpha
+  geom_ribbon(
+    data = panel_b_stack_past,
     aes(
-      y = mean_no_ir
-    ),
-    colour = grey(0.5),
-    # linewidth = 0.8
+      y = NULL,
+      ymin = bottom,
+      ymax = top,
+      fill = type
+    )
   ) +
-  # net impact with no IR, past then future
-  geom_line(
-    data = panel_b_data_future,
+  geom_ribbon(
+    data = panel_b_stack_future,
     aes(
-      y = mean_no_ir
+      y = NULL,
+      ymin = bottom,
+      ymax = top,
+      fill = type
     ),
-    colour = grey(0.5),
-    # linewidth = 0.8,
-    linetype = 3
+    alpha = 0.5
   ) +
-  # past data
+  # the interval of the total
   geom_ribbon(
     data = panel_b_data_past,
-    fill = "#56B1F7"
+    fill = grey(0.2),
+    alpha = 0.3
+  ) +
+  geom_ribbon(
+    data = panel_b_data_future,
+    fill = grey(0.2),
+    alpha = 0.15
   ) +
   geom_line(
     data = panel_b_data_past,
+    colour = grey(0.2)
+  ) +
+  geom_line(
+    data = panel_b_data_future,
     colour = grey(0.2),
-    # linewidth = 0.8
-  ) + 
-  # future projections; 1/3 of the alpha and dashed lines
-  geom_ribbon(
-    data = panel_b_data_future,
-    fill = "#56B1F7",
     alpha = 0.5,
     linetype = 3
   ) +
+  # effective coverage with no IR, past then future
+  geom_line(
+    data = panel_b_data_past,
+    aes(
+      y = mean_no_ir,
+      colour = "No resistance"
+    )
+  ) +
   geom_line(
     data = panel_b_data_future,
-    colour = grey(0.2),
-    alpha = 0.5,
-    linetype = 3,
-    # linewidth = 0.8
-  ) + 
+    aes(
+      y = mean_no_ir,
+      colour = "No resistance"
+    ),
+    linetype = 3
+  ) +
+  scale_colour_manual(
+    values = c("No resistance" = grey(0.5)),
+    name = NULL
+  ) +
   xlab("") +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    legend.position = "inside",
+    legend.position.inside = c(0.02, 0.98),
+    legend.justification = c(0, 1),
+    legend.key.size = unit(0.3, "cm"),
+    legend.text = element_text(size = rel(0.7)),
+    legend.spacing.y = unit(0, "cm"),
+    legend.margin = margin(0, 0, 0, 0)
+  ) +
+  guides(
+    colour = guide_legend(order = 1),
+    fill = guide_legend(order = 2)
+  )
 
-# C) Spatial variation in effectiveness: plot quantiles of LLIN effectiveness
-# (2025) on a map
+# C) Spatial variation in effectiveness: plot the classes of LLIN
+# effectiveness (2025) by the better buy, from the break-even effectiveness,
+# on a map
 
 
 # grey background for Africa
@@ -569,10 +788,19 @@ africa_bg <- geom_sf(data = borders,
 
 border_col <- grey(0.4)
 
-band_pal <- colorRampPalette(
-  rev(RColorBrewer::brewer.pal(9, "RdPu"))
+# the colours of panel B's pyrethroid-only and dual-AI nets for the classes
+# where they are the better buy
+band_cols <- c(pyrethroid = "#56B1F7",
+               depends = "#CC79A7",
+               next_generation = "#009E73")
+band_labels <- c(
+  pyrethroid = sprintf("Pyrethroid-only\n(> %.1f%%)",
+                       100 * break_even[["high"]]),
+  depends = sprintf("Depends on\ndelivery cost\n(%.1f-%.1f%%)",
+                    100 * break_even[["low"]], 100 * break_even[["high"]]),
+  next_generation = sprintf("Next-generation\n(< %.1f%%)",
+                            100 * break_even[["low"]])
 )
-band_cols <- band_pal(5)[2:4]
 
 panel_c <- ggplot() +
   africa_bg +
@@ -584,16 +812,13 @@ panel_c <- ggplot() +
           linewidth = 0.1,
           fill = "transparent") +
   scale_fill_manual(
-    values = c(
-      lowest = band_cols[3],
-      medium = band_cols[2],
-      highest = band_cols[1]
-    ),
-    labels = c(lowest = "Lowest", medium = "Medium", highest = "Highest"),
+    values = band_cols,
+    labels = band_labels,
+    breaks = names(band_cols),
     na.translate = FALSE,
     # note we arre using element_markdown() for legend titles so need this html
     # linebreak version
-    name = "LLIN effectiveness<br>(2025)",
+    name = "Better buy, by<br>LLIN effectiveness<br>(2025)",
     na.value = "transparent"
   ) +
   # no padding around Africa, so it fills the panel
@@ -607,15 +832,17 @@ panel_c <- ggplot() +
     legend.key.height = rel(0.8),
     legend.key.width = rel(0.8),
     legend.text.position = "left",
+    legend.text = element_text(size = rel(0.7),
+                               hjust = 1),
     legend.ticks = element_blank(),
     legend.title = element_markdown(size = rel(0.8),
                                     hjust = 1)
   )
 
-# This displays the continent in classes of LLIN effectiveness, with the third
-# of the population at risk with the highest LLIN effectiveness (>25%
-# susceptibility), the third with the lowest LLIN effectiveness (>25%
-# susceptibility)
+# This displays the continent in classes of LLIN effectiveness: where
+# pyrethroid-only nets give more effective coverage than dual-AI nets for the
+# same budget, at any delivery cost in the range; where dual-AI nets do; and
+# where it depends on the delivery cost
 
 
 
@@ -653,11 +880,7 @@ panel_d <- ggplot(
     name = "LLIN effectiveness"
   ) +
   scale_fill_manual(
-    values = c(
-      lowest = band_cols[3],
-      medium = band_cols[2],
-      highest = band_cols[1]
-    ),
+    values = band_cols,
     guide = "none",
     na.translate = FALSE,
     name = "LLIN effectiveness",

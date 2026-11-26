@@ -1,0 +1,12 @@
+quantity,item,value,unit,price_year,source
+net_price,pyrethroid_only,1.63,USD per net,2026,"Global Fund Pooled Procurement Mechanism ITN reference prices, Q1/Q2 2026, 180x160x150 cm, bulk packaging, FOB: https://www.theglobalfund.org/media/1ekjul0n/psm_llinreferenceprices_table_en.pdf"
+net_price,pbo,1.92,USD per net,2026,"As above: pyrethroid-PBO"
+net_price,dual_ai,2.35,USD per net,2026,"As above: pyrethroid-chlorfenapyr (dual a.i.)"
+campaign_cost_usd,segou,7651944,USD,2016,"Scates et al. 2020, Malaria Journal 19:105, https://doi.org/10.1186/s12936-020-03164-1, Table 2: economic cost of the 2015 Segou mass campaign, full provider perspective"
+campaign_cost_int,segou,10868670,Int$,2016,"As above, in international dollars: nets as tradable goods are the same as in USD, all other costs are converted at purchasing power parity"
+nets_distributed,segou,1752092,nets,,"As above"
+campaign_cost_usd,bamako,7252833,USD,2016,"As above, for the 2015 Bamako mass campaign"
+campaign_cost_int,bamako,10720818,Int$,2016,"As above, in international dollars"
+nets_distributed,bamako,1571834,nets,,"As above"
+cpi,2016,240.007,index (1982-84 = 100),2016,"US CPI-U, all items, US city average, not seasonally adjusted (BLS series CUUR0000SA0): 2016 annual average"
+cpi,2026,332.769,index (1982-84 = 100),2026,"As above: mean of January to October 2026, the months published by 27 November 2026 (the 2026 annual average is published in January 2027)"
