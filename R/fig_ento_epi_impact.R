@@ -711,7 +711,7 @@ effectiveness_panel <- function(model) {
   ) +
     scale_y_continuous(
       labels = scales::percent,
-      limits = c(0.5, 1),
+      limits = c(0.6, 1),
       name = "LLIN effectiveness"
     ) +
     # vertical dividing line for past and future, light grey and solid,
@@ -730,18 +730,17 @@ effectiveness_panel <- function(model) {
       colour = grey(0.2),
       # linewidth = 0.8
     ) + 
-    # future projections; 1/3 of the alpha and dashed lines
+    # future projections, at half the alpha; the line solid, as dotted lines
+    # are counterfactuals
     geom_ribbon(
       data = panel_b_data_future,
       fill = "#56B1F7",
-      alpha = 0.5,
-      linetype = 3
+      alpha = 0.5
     ) +
     geom_line(
       data = panel_b_data_future,
       colour = grey(0.2),
       alpha = 0.5,
-      linetype = 3,
       # linewidth = 0.8
     ) + 
     # the break-even effectiveness e*(D) at the mean delivery cost: above it,
@@ -752,14 +751,19 @@ effectiveness_panel <- function(model) {
       colour = grey(0.4),
       linetype = 2
     ) +
+    # which nets are more cost-effective on either side of the line, in the
+    # corners the effectiveness leaves clear under either model: top right
+    # above it, bottom left below it
     annotate(
       "text",
-      x = min(years_plot),
-      y = break_even,
-      label = c("Pyrethroid-only", "Dual-AI"),
-      hjust = 0,
-      vjust = c(-0.5, 1.5),
-      size = 2.5,
+      x = c(max(years_plot), min(years_plot)),
+      y = c(1, 0.6),
+      label = c("Pyrethroid-only\nmore cost-effective",
+                "Dual-AI\nmore cost-effective"),
+      hjust = c(1, 0),
+      vjust = c(1, 0),
+      size = 2.2,
+      lineheight = 0.9,
       colour = grey(0.4)
     ) +
     xlab("") +
@@ -809,18 +813,6 @@ coverage_panel <- function(model) {
     ) %>%
     ungroup()
 
-  # split into past and future, both including the latest year of data so there is
-  # no break in lines or ribbons
-  panel_a_data_past <- panel_a_data %>%
-    filter(
-      year <= latest_nets
-    )
-
-  panel_a_data_future <- panel_a_data %>%
-    filter(
-      year >= latest_nets
-    )
-
   panel_a_stack_past <- panel_a_stack %>%
     filter(
       year <= latest_nets
@@ -829,11 +821,6 @@ coverage_panel <- function(model) {
   panel_a_stack_future <- panel_a_stack %>%
     filter(
       year >= latest_nets
-    )
-
-  panel_a_final <- panel_a_data %>%
-    filter(
-      year == max(year)
     )
 
   panel_a <- ggplot(
@@ -881,37 +868,22 @@ coverage_panel <- function(model) {
       ),
       alpha = 0.5
     ) +
+    # the counterfactual without resistance, dotted: the tops of the dual-AI
+    # and PBO bands (where those nets are in use), which resistance leaves
+    # unchanged, and the total for all nets
     geom_line(
-      data = panel_a_data_future,
-      colour = grey(0.2),
-      alpha = 0.5,
-      linetype = 3
-    ) +
-    # dotted lines between the bands in the projection
-    geom_line(
-      data = filter(panel_a_stack_future, type != "pyrethroid"),
+      data = filter(panel_a_stack, type != "pyrethroid", top > 0),
       aes(
         y = top,
         ymin = NULL,
         ymax = NULL,
-        group = type
-      ),
-      colour = grey(0.2),
-      alpha = 0.5,
-      linetype = 3
-    ) +
-    # effective coverage with no IR, past then future: dotted throughout, as
-    # a counterfactual
-    geom_line(
-      data = panel_a_data_past,
-      aes(
-        y = mean_no_ir,
+        group = type,
         colour = "No resistance"
       ),
       linetype = 3
     ) +
     geom_line(
-      data = panel_a_data_future,
+      data = panel_a_data,
       aes(
         y = mean_no_ir,
         colour = "No resistance"
