@@ -2,7 +2,8 @@
 # pyrethroid-only ITNs across Africa due to IR, its cost to the effective
 # coverage of the nets in use, and where pyrethroid-only or dual-AI nets are
 # the better buy (#75). Effectiveness is the relative epidemiological
-# effectiveness g*(k) of Symons et al. (below).
+# effectiveness e(k) of Symons et al., or, in the supplement's version, of
+# Churcher et al. 2024 (R/net_effectiveness.R).
 
 # three panel plot:
 
@@ -294,8 +295,8 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
   }
 
   # Forked workers deadlocked on the Linux box (each waiting on a lock held
-  # at the fork), so this ran in one process (IR_CUBE_MAP_WORKERS = 1): 3 h
-  # with OpenBLAS (8 threads), 21 GB at peak. At 4 workers, memory also ran
+  # at the fork), so this ran in one process (IR_CUBE_MAP_WORKERS = 1): 3 h 15
+  # min with OpenBLAS (8 threads), 22 GB at peak. At 4 workers, memory also ran
   # short: each added a few GB to the parent's ~11 GB
   invisible(gc())
   n_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
