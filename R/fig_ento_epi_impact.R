@@ -1,17 +1,16 @@
 # Plot the decline (2000-2025 and projected 2025-2030) in the effectiveness of
 # pyrethroid-only ITNs across Africa due to IR, its cost to the effective
-# coverage of the nets in use, and where pyrethroid-only or next-generation
-# nets are the better buy (#75). Effectiveness is the relative epidemiological
+# coverage of the nets in use, and where pyrethroid-only or dual-AI nets are
+# the better buy (#75). Effectiveness is the relative epidemiological
 # effectiveness g*(k) of Symons et al. (below).
 
-# four panel plot:
+# three panel plot:
 
 # A) Declining effectiveness of nets: timeseries with ribbon of uncertainty
-# (from Tas' estimates) giving the effectiveness, relative to a fully
-# susceptible population, that a pyrethroid-only LLIN would have for each
-# person at risk, whether or not nets are in use there: averaged across Africa
-# over the population at risk (population times PfPR, both in 2000, fixed over
-# time)
+# giving the effectiveness, relative to a fully susceptible population, that a
+# pyrethroid-only LLIN would have for each person at risk, whether or not nets
+# are in use there: averaged across Africa over the population at risk
+# (population times PfPR, both in 2000, fixed over time)
 
 # B) Effective coverage: net use times effectiveness, summed over three groups
 # of net types (R/prep_net_use_pyrethroid.R) and averaged across Africa over
@@ -23,19 +22,17 @@
 # resistance, all nets in use fully effective; the gap between them is the
 # coverage lost to resistance
 
-# C) Spatial variation in effectiveness: classes of 2025 susceptibility on a
-# map, by whether pyrethroid-only or dual-AI nets give more effective coverage
-# for the same budget (break_even_effectiveness()), with the delivery cost per
-# net from two mass campaigns in Mali (Scates et al. 2020), under two models of
-# effectiveness (Symons et al. and Churcher et al. 2024); uncertain where the
-# models and delivery costs disagree
-
-# D) Effectiveness over time within each class, as A
+# C) Spatial variation in effectiveness: the posterior probability that
+# pyrethroid-only nets give more effective coverage than dual-AI nets for the
+# same budget in 2025 (break_even_effectiveness()), at the mean delivery cost
+# per net of two mass campaigns in Mali (Scates et al. 2020). The supplement's
+# version uses the effectiveness model of Churcher et al. 2024 instead
 
 # After the last year of net use data (2025), use and the mix of net types are
-# held at that year's values. The ribbons are 50% intervals of Symons et al.'s
-# parameter uncertainty, conditional on the posterior mean susceptibility
-# maps. The numbers for the text are printed after the panels' data.
+# held at that year's values. The ribbons are credible intervals of the
+# two-stage posterior (compute_epi_draws()), with Symons et al.'s coefficients
+# at their posterior means. The numbers for the text are printed after the
+# panels' data.
 
 
 
@@ -164,23 +161,14 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 #   b        the sum of k times the pyrethroid-only nets' use and the year's
 #            population at risk weights (panel B); b_weight the sum of the
 #            weights
-#   d        the sum of k times the population at risk in 2000 weights in each
-#            class of 2025 susceptibility, under each rule (panel D);
-#            d_weight the sum of the weights. The classes are those above
-#            the highest break-even susceptibility k* (break_even), below the
-#            lowest, and between; the rule "mean" puts a cell in a class by its
-#            posterior mean, and rule p by the posterior probability p (in
-#            `confidence`) of being above the highest or below the lowest
-#            k*, uncertain otherwise
-# and for each cell, its population at risk in 2025 and the posterior mean,
-# quantiles (probs) and probabilities of being above the highest k* and below
-# the lowest of its 2025 susceptibility (panel C). The cells are processed in
-# forked workers (IR_CUBE_MAP_WORKERS; see below), in chunks of chunk_size
-# cells, each holding all the draws of its cells; the results do not depend
-# on either
+# and for each cell, its population at risk in 2025, and the posterior mean
+# of its 2025 susceptibility and the posterior probability that it is above
+# each break-even susceptibility k* (break_even, one per effectiveness model;
+# panel C). The cells are processed in forked workers (IR_CUBE_MAP_WORKERS;
+# see below), in chunks of chunk_size cells, each holding all the draws of its
+# cells; the results do not depend on either
 compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
-                              break_even, confidence, probs,
-                              chunk_size = 2500) {
+                              break_even, chunk_size = 2500) {
   terraOptions(todisk = TRUE)
   baseline_year <- 1995
   years_all <- baseline_year:max(years_plot)
@@ -237,25 +225,12 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
             length(unique(lapply(setups, `[[`, "batches"))) == 1)
   n_draws <- setups[[1]]$n_draws
 
-  # the classes of each cell under each rule, from the draws of its 2025
-  # susceptibility (draws x cells): 1 pyrethroid, 2 uncertain, 3
-  # next-generation
-  class_names <- c("pyrethroid", "uncertain", "next_generation")
-  rules <- c("mean", as.character(confidence))
-  classify <- function(k_2025) {
-    mean <- colMeans(k_2025)
-    above <- colMeans(k_2025 > break_even[["high"]])
-    below <- colMeans(k_2025 < break_even[["low"]])
-    by_mean <- 3 - (mean >= break_even[["low"]]) -
-      (mean > break_even[["high"]])
-    by_probability <- sapply(confidence, function(p) {
-      if_else(above >= p, 1, if_else(below >= p, 3, 2))
-    })
-    classes <- cbind(by_mean, by_probability)
-    colnames(classes) <- paste0("class_", rules)
-    list(classes = classes,
-         stats = cbind(mean = mean, above = above, below = below,
-                       t(apply(k_2025, 2, quantile, probs)), classes))
+  # the posterior mean of each cell's 2025 susceptibility, and its posterior
+  # probability of being above each k*, from its draws (draws x cells)
+  exceedance <- function(k_2025) {
+    above <- sapply(break_even, function(k_star) colMeans(k_2025 > k_star))
+    colnames(above) <- paste0("above_", names(break_even))
+    cbind(mean = colMeans(k_2025), above)
   }
 
   # the sums of a group of cells (rows of the cells above): the draws of all
@@ -265,9 +240,7 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
     chunks <- split(seq_along(group), ceiling(seq_along(group) / chunk_size))
     sums <- list(
       a = matrix(0, n_draws, length(years_plot)),
-      b = matrix(0, n_draws, length(years_plot)),
-      d = array(0, c(n_draws, length(rules) * 3, length(years_plot))),
-      d_weight = numeric(length(rules) * 3)
+      b = matrix(0, n_draws, length(years_plot))
     )
     stats <- vector("list", length(chunks))
     for (i in seq_along(chunks)) {
@@ -289,18 +262,12 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
       # check: these are the map's draws
       stopifnot(max(abs(colMeans(k[, , index_2025]) - map_2025[rows])) <
                   1e-5)
-      classified <- classify(k[, , index_2025])
-      class_weights <- do.call(cbind, lapply(seq_along(rules), function(r) {
-        sapply(1:3, function(c) weight_a[rows] * (classified$classes[, r] == c))
-      }))
       for (j in seq_along(years_plot)) {
         sums$a[, j] <- sums$a[, j] + k[, , j] %*% weight_a[rows]
         sums$b[, j] <- sums$b[, j] + k[, , j] %*% weight_b[rows, j]
-        sums$d[, , j] <- sums$d[, , j] + k[, , j] %*% class_weights
       }
-      sums$d_weight <- sums$d_weight + colSums(class_weights)
       stats[[i]] <- cbind(cell = cells[rows], people_2025 = people_2025[rows],
-                          classified$stats)
+                          exceedance(k[, , index_2025]))
       rm(k, chunk)
       if (i %% 5 == 0) {
         message(format(Sys.time(), "%H:%M:%S"), " cells ", min(group), "-",
@@ -330,14 +297,11 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
          paste(unique(unlist(done[failed])), collapse = "; "))
   }
   add <- function(name) Reduce(`+`, lapply(done, `[[`, name))
-  d_names <- paste(rep(rules, each = 3), class_names, sep = ":")
   list(
     years = years_plot,
     a = `colnames<-`(add("a"), years_plot),
     b = `colnames<-`(add("b"), years_plot),
     b_weight = colSums(weight_b),
-    d = `dimnames<-`(add("d"), list(NULL, d_names, years_plot)),
-    d_weight = setNames(add("d_weight"), d_names),
     cells = as_tibble(do.call(rbind, lapply(done, `[[`, "stats")))
   )
 }
@@ -370,7 +334,8 @@ cost_value <- function(quantity, item) {
 # power parity, k times higher in Int$. With the same net cost N per net at
 # both sites, a site's cost per net is N + D in USD and N + k D in Int$, so k
 # is the ratio of the sites' differences in Int$ and in USD, and
-# D = (Int$ - USD) / (k - 1). Inflated from 2016 to 2026 USD with US CPI-U
+# D = (Int$ - USD) / (k - 1). Inflated from 2016 to 2026 USD with US CPI-U;
+# the break-even is at the mean of the two sites
 campaigns <- tibble(site = c("segou", "bamako")) %>%
   mutate(
     usd = map_dbl(site, ~ cost_value("campaign_cost_usd", .x)),
@@ -387,10 +352,9 @@ campaigns <- campaigns %>%
     net_2016 = usd - delivery_2016,
     delivery = delivery_2016 * inflation
   )
-delivery_range <- c(low = min(campaigns$delivery),
-                    high = max(campaigns$delivery))
+delivery <- mean(campaigns$delivery)
 break_even <- break_even_effectiveness(
-  delivery = delivery_range,
+  delivery = delivery,
   price_pyrethroid = cost_value("net_price", "pyrethroid_only"),
   price_dual_ai = cost_value("net_price", "dual_ai")
 )
@@ -512,26 +476,11 @@ susceptibility_at <- function(model, e) {
   uniroot(function(k) model(k) - e, c(0, 1), tol = 1e-8)$root
 }
 
-# The break-even susceptibility k*, where e(k*) = e*(D), under each model at
-# the lowest and highest delivery cost D. e*(D) rises with D, so the lowest
-# k* is that of the more optimistic model at the lowest D, and the highest
-# that of the other model at the highest D. Pyrethroid-only nets are the
-# better buy above the highest k*, under either model at any D in the range,
-# and next-generation nets below the lowest; between, it is uncertain
-break_even_thresholds <- expand_grid(
-  model = names(effectiveness_models),
-  delivery = c("low", "high")
-) %>%
-  mutate(
-    effectiveness = break_even[delivery],
-    susceptibility = map2_dbl(model, effectiveness, function(model, e) {
-      susceptibility_at(effectiveness_models[[model]], e)
-    })
-  )
-break_even_susceptibility <- c(
-  low = min(break_even_thresholds$susceptibility),
-  high = max(break_even_thresholds$susceptibility)
-)
+# The break-even susceptibility k*, where e(k*) = e*(D), under each model.
+# Pyrethroid-only nets are the better buy above it, dual-AI nets below. Panel
+# C uses Symons et al.'s, the supplement's map Churcher et al.'s
+break_even_susceptibility <- vapply(effectiveness_models, susceptibility_at,
+                                    numeric(1), e = break_even)
 
 # net use by type (R/prep_net_use_pyrethroid.R): MITN run 06 use times each
 # group's share of the net crop in the admin 1 unit. The pyrethroid-only nets
@@ -557,9 +506,7 @@ draws <- cached_figure_data(
   "temporary/fig_ento_epi_impact_draws.rds", compute_epi_draws,
   args = list(years_plot = years_plot, net_type_files = net_type_files,
               llin_weights = llin_weights,
-              break_even = break_even_susceptibility,
-              confidence = c(0.8, 0.9, 0.95),
-              probs = c(0.025, 0.05, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95, 0.975)),
+              break_even = break_even_susceptibility),
   sources = c("R/packages.R", "R/functions.R", "R/model_covariates.R",
               "R/bioassay_subset.R", "R/two_stage_predictions.R"),
   inputs = c(ir_map_files("llin_effective", years_plot), net_type_files,
@@ -567,11 +514,7 @@ draws <- cached_figure_data(
 )
 latest_nets <- epi$latest_nets
 
-# The rule for the classes of panels C and D: "mean", by the posterior mean
-# 2025 susceptibility, or a confidence (0.8, 0.9 or 0.95), by the posterior
-# probability of being above the highest break-even susceptibility or below
-# the lowest (compute_epi_draws()); and the credible intervals of the ribbons
-classification <- "mean"
+# the credible intervals of the ribbons
 interval <- 0.95
 
 # the posterior mean and credible interval of draws x years
@@ -607,22 +550,15 @@ panel_b_data <- epi$coverage %>%
   ) %>%
   bind_cols(select(posterior_summary(coverage_total), lower, upper))
 
-# panel C: the classes of each cell under the rule, within the limits of
-# transmission
-class_names <- c("pyrethroid", "uncertain", "next_generation")
-bands <- rast(rast("data/clean/raster_mask.tif"))
-bands[draws$cells$cell] <- draws$cells[[paste0("class_", classification)]]
-levels(bands) <- data.frame(id = 1:3, band = class_names)
-bands_mask <- terra::mask(bands, rast("data/clean/pfpr_water_mask.tif"))
-
-# panel D: the effectiveness of a pyrethroid-only net in each class, at the
-# mean susceptibility over the class's population at risk in 2000
-panel_d_data <- bind_rows(lapply(class_names, function(band_name) {
-  column <- paste(classification, band_name, sep = ":")
-  posterior_summary(symons(draws$d[, column, ] / draws$d_weight[[column]])) %>%
-    mutate(band = band_name)
-})) %>%
-  mutate(band = factor(band, levels = class_names))
+# panel C: the posterior probability that pyrethroid-only nets are the better
+# buy in 2025 (susceptibility above the model's k*), within the limits of
+# transmission; Symons et al.'s for panel C, Churcher et al.'s for the
+# supplement
+better_buy_map <- function(model) {
+  probability <- rast(rast("data/clean/raster_mask.tif"))
+  probability[draws$cells$cell] <- draws$cells[[paste0("above_", model)]]
+  terra::mask(probability, rast("data/clean/pfpr_water_mask.tif"))
+}
 
 
 # numbers for the text --------------------------------------------------------
@@ -675,68 +611,54 @@ cat("\nDelivery cost per net (USD per net distributed; Scates et al. 2020):",
     sprintf("\n  %s: %.2f (2016 USD), %.2f (2026 USD)", campaigns$site,
             campaigns$delivery_2016, campaigns$delivery),
     sprintf("\n  CPI 2026 / 2016: %.4f", inflation), "\n")
-cat(sprintf("D_low %.2f, D_high %.2f (2026 USD); e*(D_low) %.4f, e*(D_high) %.4f\n",
-            delivery_range[["low"]], delivery_range[["high"]],
-            break_even[["low"]], break_even[["high"]]))
+cat(sprintf(paste0("Mean of the two sites, D: %.2f (2026 USD); break-even",
+                   " effectiveness e*(D): %.4f\n"), delivery, break_even))
 
 cat("\nBreak-even susceptibility k* (bioassay mortality, %), where e(k*) =",
-    "e*(D), by effectiveness model and delivery cost:\n")
-break_even_thresholds %>%
-  mutate(text = sprintf("%s, D_%s: e* %.1f, k* %.1f", model, delivery,
-                        100 * effectiveness, 100 * susceptibility)) %>%
-  pull(text) %>%
-  cat(sep = "\n")
+    "e*(D), by effectiveness model:\n")
+cat(sprintf("%s: %.1f", names(break_even_susceptibility),
+            100 * break_even_susceptibility), sep = "\n")
 
-# the classes' shares of the population at risk in 2025 under each rule, and
-# their mean 2025 effectiveness over it under each model, at the posterior
-# mean susceptibility
-band_summary <- draws$cells %>%
-  select(people_2025, mean, starts_with("class_")) %>%
-  pivot_longer(starts_with("class_"), names_to = "rule",
-               names_prefix = "class_", values_to = "class") %>%
-  mutate(band = class_names[class]) %>%
-  group_by(rule, band) %>%
-  summarise(
-    people = sum(people_2025),
-    symons = weighted.mean(effectiveness_models$symons(mean), people_2025),
-    churcher = weighted.mean(effectiveness_models$churcher(mean),
-                             people_2025),
-    .groups = "drop"
-  ) %>%
-  group_by(rule) %>%
+# the shares of the population at risk in 2025 by the posterior probability
+# that pyrethroid-only nets are the better buy, under each model
+probability_bins <- c(0, 0.05, 0.2, 0.5, 0.8, 0.95, 1)
+better_buy_shares <- draws$cells %>%
+  select(people_2025, starts_with("above_")) %>%
+  pivot_longer(starts_with("above_"), names_to = "model",
+               names_prefix = "above_", values_to = "probability") %>%
+  mutate(bin = cut(probability, probability_bins, right = FALSE,
+                   include.lowest = TRUE)) %>%
+  group_by(model, bin) %>%
+  summarise(people = sum(people_2025), .groups = "drop_last") %>%
   mutate(share = people / sum(people)) %>%
   ungroup()
 
-cat("\nClasses of 2025 susceptibility by rule (share: % of the population at",
-    "risk in 2025; effectiveness: its mean over them under each model at the",
-    "posterior mean susceptibility, %):\n")
-band_summary %>%
-  mutate(text = sprintf(paste("%s, %s: share %.1f, effectiveness %.1f",
-                              "(Symons), %.1f (Churcher)"),
-                        rule, band, 100 * share, 100 * symons,
-                        100 * churcher)) %>%
+cat("\nPopulation at risk in 2025 by the posterior probability that",
+    "pyrethroid-only nets are the better buy (share: % of the population at",
+    "risk in 2025):\n")
+better_buy_shares %>%
+  mutate(text = sprintf("%s, probability %s: share %.1f", model, bin,
+                        100 * share)) %>%
   pull(text) %>%
   cat(sep = "\n")
 
 # the gain in effective coverage from buying pyrethroid-only instead of dual-AI
-# nets with the same budget, where pyrethroid-only nets are the better buy
-# under the rule: (P_dual + D) / (P_pyr + D) e - 1, linear in e, so its mean
-# over the population at risk is that at the class's mean effectiveness
-pyrethroid_better <- band_summary %>%
-  filter(rule == classification, band == "pyrethroid")
+# nets with the same budget, where pyrethroid-only nets are more likely than
+# not the better buy (probability above 0.5): (P_dual + D) / (P_pyr + D) e - 1
+# = e / e*(D) - 1, linear in e, so its mean over the population at risk is
+# that at their mean effectiveness, here at each cell's posterior mean
+# susceptibility
+gain <- vapply(names(effectiveness_models), function(model) {
+  better <- draws$cells[[paste0("above_", model)]] > 0.5
+  effectiveness <- weighted.mean(
+    effectiveness_models[[model]](draws$cells$mean[better]),
+    draws$cells$people_2025[better]
+  )
+  effectiveness / break_even - 1
+}, numeric(1))
 cat("\nGain in effective coverage from pyrethroid-only nets, where they are",
-    "the better buy (% of that from dual-AI nets):\n")
-expand_grid(model = names(effectiveness_models),
-            delivery = c("low", "high")) %>%
-  mutate(
-    gain = (cost_value("net_price", "dual_ai") + delivery_range[delivery]) /
-      (cost_value("net_price", "pyrethroid_only") +
-         delivery_range[delivery]) *
-      map_dbl(model, ~ pyrethroid_better[[.x]]) - 1,
-    text = sprintf("%s, D_%s: %.1f", model, delivery, 100 * gain)
-  ) %>%
-  pull(text) %>%
-  cat(sep = "\n")
+    "more likely than not the better buy (% of that from dual-AI nets):\n")
+cat(sprintf("%s: %.1f", names(gain), 100 * gain), sep = "\n")
 
 # panel A: Declining effectiveness of nets
 # mean and CI of "individual_net_impact" over time
@@ -979,8 +901,9 @@ panel_b <- ggplot(
     fill = guide_legend(order = 2)
   )
 
-# C) Spatial variation in effectiveness: plot the classes of susceptibility
-# (2025) by the better buy, from the break-even susceptibility, on a map
+# C) Spatial variation in effectiveness: the posterior probability that
+# pyrethroid-only nets are the better buy (2025), on a map, from white (as
+# likely as not) to the colours of panel B's net types
 
 
 # grey background for Africa
@@ -990,143 +913,67 @@ africa_bg <- geom_sf(data = borders,
 
 border_col <- grey(0.4)
 
-# the colours of panel B's pyrethroid-only and dual-AI nets for the classes
-# where they are the most cost-effective, and for the uncertain class a colour
-# halfway between them, lightened three quarters of the way to white. The
-# thresholds are in the log, for the caption
-pyrethroid_col <- net_type_cols[["pyrethroid"]]
-next_generation_col <- net_type_cols[["dual_ai"]]
-uncertain_col <- colorRampPalette(
-  c(colorRampPalette(c(pyrethroid_col, next_generation_col))(3)[2], "white")
-)(5)[4]
-band_cols <- c(pyrethroid = pyrethroid_col,
-               uncertain = uncertain_col,
-               next_generation = next_generation_col)
-band_labels <- c(pyrethroid = "Pyrethroid-only",
-                 uncertain = "Uncertain",
-                 next_generation = "Next-generation")
+# panel B's dual-AI maroon at probability 0, and at 1 its pyrethroid-only
+# blue darkened to the maroon's lightness (CIELAB L* 39), so that both ends
+# are as strong. The ramp is stretched symmetrically about 0.5, the distance
+# from it raised to a power, so it stays near white across the middle. The
+# break-even susceptibilities are in the log, for the caption
+pyrethroid_dark_col <- "#0062A1"
+ramp_stretch <- 2
+probability_grid <- seq(0, 1, length.out = 101)
+better_buy_cols <- scales::colour_ramp(
+  c(net_type_cols[["dual_ai"]], "white", pyrethroid_dark_col)
+)(0.5 + sign(probability_grid - 0.5) *
+    abs(2 * probability_grid - 1)^ramp_stretch / 2)
 
-panel_c <- ggplot() +
-  africa_bg +
-  geom_spatraster(
-    data = bands_mask,
-  ) +
-  geom_sf(data = borders,
-          col = border_col,
-          linewidth = 0.1,
-          fill = "transparent") +
-  scale_fill_manual(
-    values = band_cols,
-    labels = band_labels,
-    breaks = names(band_cols),
-    na.translate = FALSE,
-    # note we arre using element_markdown() for legend titles so need this html
-    # linebreak version
-    name = "Most cost-effective<br>(2025)",
-    na.value = "transparent"
-  ) +
-  # no padding around Africa, so it fills the panel
-  coord_sf(expand = FALSE) +
-  theme_ir_maps() +
-  theme(
-    strip.text.x = element_text(hjust = 0),
-    plot.margin = unit(rep(0, 4), "cm"),
-    legend.position = "inside",
-    legend.position.inside = c(0.02, 0.22),
-    legend.key.height = rel(0.8),
-    legend.key.width = rel(0.8),
-    legend.text.position = "left",
-    legend.text = element_text(size = rel(0.7),
-                               hjust = 1),
-    legend.ticks = element_blank(),
-    legend.title = element_markdown(size = rel(0.8),
-                                    hjust = 1)
-  )
+better_buy_panel <- function(model) {
+  ggplot() +
+    africa_bg +
+    geom_spatraster(
+      data = better_buy_map(model)
+    ) +
+    geom_sf(data = borders,
+            col = border_col,
+            linewidth = 0.1,
+            fill = "transparent") +
+    scale_fill_gradientn(
+      colours = better_buy_cols,
+      values = probability_grid,
+      limits = c(0, 1),
+      breaks = c(0, 1),
+      labels = c("Dual-AI", "Pyrethroid-only"),
+      # note we arre using element_markdown() for legend titles so need this
+      # html linebreak version
+      name = "Most likely<br>cost-effective<br>(2025)",
+      na.value = "transparent"
+    ) +
+    # no padding around Africa, so it fills the panel
+    coord_sf(expand = FALSE) +
+    theme_ir_maps() +
+    theme(
+      plot.margin = unit(rep(0, 4), "cm"),
+      # to the left of the map, in the space its aspect ratio leaves
+      legend.position = "left",
+      # a colourbar is five keys long
+      legend.key.height = unit(0.4, "cm"),
+      legend.key.width = unit(0.3, "cm"),
+      legend.text.position = "left",
+      legend.text = element_text(size = rel(0.7),
+                                 hjust = 1),
+      legend.ticks = element_blank(),
+      legend.title = element_markdown(size = rel(0.8),
+                                      hjust = 1)
+    )
+}
 
-# This displays the continent in classes of susceptibility: where
-# pyrethroid-only nets give more effective coverage than dual-AI nets for the
-# same budget, under either effectiveness model and any delivery cost in the
-# range; where dual-AI nets do; and where it is uncertain
-
-
-
-
-
-# panel D should show effectiveness in these bands, in these colours, like panel
-# A
-
-
-
-# split into past and future, both including the latest year of data so there is
-# no break in lines or ribbons
-panel_d_data_past <- panel_d_data %>%
-  filter(
-    year <= latest_nets
-  )
-
-panel_d_data_future <- panel_d_data %>%
-  filter(
-    year >= latest_nets
-  )
-
-panel_d <- ggplot(
-  mapping = aes(
-    x = year,
-    y = mean,
-    ymin = lower,
-    ymax = upper,
-    fill = band
-  )
-) +
-  scale_y_continuous(
-    labels = scales::percent,
-    limits = c(0, 1),
-    name = "LLIN effectiveness"
-  ) +
-  scale_fill_manual(
-    values = band_cols,
-    guide = "none",
-    na.translate = FALSE,
-    name = "LLIN effectiveness",
-    na.value = "transparent",
-  ) +
-  # past data
-  geom_ribbon(
-    data = panel_d_data_past,
-  ) +
-  geom_line(
-    data = panel_d_data_past,
-    colour = grey(0.2)
-  ) + 
-  # future projections; 1/3 of the alpha and dashed lines
-  geom_ribbon(
-    data = panel_d_data_future,
-    alpha = 0.5,
-    linetype = 3
-  ) +
-  geom_line(
-    data = panel_d_data_future,
-    colour = grey(0.2),
-    alpha = 0.5,
-    linetype = 3
-  ) + 
-  # vertical dividing line for past and future
-  geom_vline(
-    xintercept = latest_nets,
-    color = grey(0.6),
-    linetype = 2
-  ) +
-  xlab("") +
-  theme_minimal()
+panel_c <- better_buy_panel("symons")
 
 plots_all <- panel_a +
   panel_b +
   panel_c +
-  panel_d +
   plot_layout(
-    ncol = 2,
-    nrow = 2,
-    widths = rep(1, 4)
+    ncol = 3,
+    widths = rep(1, 3)
   ) +
   plot_annotation(
     tag_levels = "A"
@@ -1136,8 +983,20 @@ ggsave(
   filename = "figures/epi_impact.png",
   plot = plots_all,
   bg = "white",
-  width = 7,
-  height = 6,
+  width = 10.5,
+  height = 3,
+  scale = 1,
+  dpi = 300
+)
+
+# the supplement's version of panel C, under the effectiveness model of
+# Churcher et al. 2024
+ggsave(
+  filename = "figures/epi_impact_churcher.png",
+  plot = better_buy_panel("churcher"),
+  bg = "white",
+  width = 4.5,
+  height = 4.5,
   scale = 1,
   dpi = 300
 )
