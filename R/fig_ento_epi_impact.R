@@ -580,13 +580,14 @@ effectiveness_panel <- function(model) {
     ) +
     # which nets are more cost-effective on either side of the line, in the
     # corners the effectiveness leaves clear under either model: top right
-    # above it, bottom left below it
+    # above it, bottom left below it; on three lines, so the top one stays
+    # clear of Churcher's curve, which is still high in 2010
     annotate(
       "text",
       x = c(max(years_plot), min(years_plot)),
       y = c(1, 0.6),
-      label = c("Pyrethroid-only\nmore cost-effective",
-                "Dual-AI\nmore cost-effective"),
+      label = c("Pyrethroid-only\nmore\ncost-effective",
+                "Dual-AI\nmore\ncost-effective"),
       hjust = c(1, 0),
       vjust = c(1, 0),
       size = 3,
