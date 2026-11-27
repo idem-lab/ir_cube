@@ -43,6 +43,8 @@
 source("R/packages.R")
 source("R/functions.R")
 source("R/model_covariates.R")
+source("R/bioassay_subset.R")
+source("R/two_stage_predictions.R")
 source("R/figure_cache.R")
 
 # The panels' data are cached in temporary/fig_ento_epi_impact.rds
@@ -68,23 +70,20 @@ years_plot <- 2000:2030
 borders <- readRDS("data/clean/country_borders.RDS")
 
 
-# The panels' data: effectiveness and effective coverage over time,
-# Africa-wide and in the bands of 2025 effectiveness, the bands themselves
-# (wrapped, to be saved), and the numbers for the text, from the two-stage IR
-# maps, net use by type (net_type_files), PfPR 2000 and population. n_sims
-# draws of the Symons et al. coefficients, from `seed`; break_even, the lowest
-# and highest break-even susceptibility k* (below)
-compute_epi_impact <- function(years_plot, n_sims, seed, net_type_files,
-                               break_even) {
+# The deterministic parts of the panels: effective coverage of the PBO and
+# dual-AI nets (assumed fully effective), the pyrethroid-only nets' use, and
+# all nets' effective coverage without resistance, averaged over the
+# population at risk of each year; each type's share of net use in 2024; and
+# the year of the last net use data. From net use by type (net_type_files),
+# PfPR 2000 and population, at the cells with a susceptibility map (all but
+# 1e-5 of the population at risk)
+compute_epi_impact <- function(years_plot, net_type_files) {
   # write the cubes terra computes to temporary files: held in memory, they
   # peaked at 26 GB; on disk, at 8 GB, for a minute and a half longer
   terraOptions(todisk = TRUE)
 
-  # load mask with limits of transmission and water bodies for plotting
-  pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
-
   # - IR layers (susceptibility to the pyrethroids used in LLINs), of the
-  # two-stage model (R/two_stage_maps.R)
+  # two-stage model (R/two_stage_maps.R), for the cells they cover
   ir <- rast(ir_map_files("llin_effective", years_plot))
   names(ir) <- years_plot
 
@@ -112,85 +111,6 @@ compute_epi_impact <- function(years_plot, n_sims, seed, net_type_files,
   names(pop_future) <- str_remove(names(pop_future), "^pop_")
   pop_all <- c(pop, pop_future)
 
-  # other:
-
-  # Encode Symons et al. PMI function for relative effectiveness of ITNs at
-  # reducing logit-PfPR (reduction in on the log-odds ratio), compared to in the absence
-  # of resistance.
-
-  # when susceptibility is 100%, the ITN effectiveness parameter has full effect
-  # (multiplier 1), when susceptibility is 0%, the ITN effectiveness parameter has
-  # 54% (multiplier 0.54).
-
-  # compute the relative epi impact from the posterior mean of the parameters
-  epi_function_mean <- function(susceptibility) {
-    1 - 0.46 * (1 - susceptibility)
-  }
-
-  # The log-odds ratio for malaria infection under full ITN coverage (relative to
-  # no ITN coverage) is -1.68, which corresponds to an odds ratio of 0.186374.
-  # With a fully-resistant vector population, this is would reduce to 54% of its
-  # previous value, -0.9072, giving an odds ratio of 0.4036529.
-
-  # Alternative interpretation: the odds ratio for a population with 100% coverage
-  # and 100% resistance is equivalent to that of a population with 54% coverage
-  # and 0% resistance.
-
-  # get the estimate and SD. for the parameters behind this model, to be able to
-  # propagate variance through the subsequent calculations
-
-  # beta_0 = beta_{physical} = 'ITN_physical'
-  #   beta_0 ~ N(-1.68, 0.11^2)
-  # beta_1 = beta_{penalty} = 'ITN_insecticidal_penalty'
-  #   beta_1 ~ N(0.78, 0.12^2)
-
-  # the log odds (contribution to the linear predictor) is computed from these
-  # parameters, with a non-linear function of ITN coverage f(ITN) and
-  # susceptibility k:
-
-  #   log_odds = beta_0 * f(ITN) + beta_1 * (1 - k) * f(ITN)
-  #            = f(ITN) * (beta_0 + beta_1 * (1 - k))
-
-  # we can therefore factorise to get a net effectiveness measure g(k):
-  #   log_odds = f(ITN) * g(k)
-  #   g(k) = beta_0 + beta_1 * (1 - k)
-
-  # from which we can obtain a *relative* net effectiveness, giving the
-  # effectiveness relative to a fully susceptible population (k = 1):
-  #   g*(k) = g(k) / g(1)
-
-  # since:
-  #   g(1) = beta_0 + beta_1 * (1 - k)
-  #        = beta_0 + beta_1 * 0
-  #        = beta_0
-  # we have:
-  #   g*(k) = g(k) / beta_0
-  #         = (beta_0 + beta_1 * (1 - k)) / beta_0
-  #         = 1 + (beta_1 * (1 - k)) / beta_0
-
-  # this is equivalent to a ratio of normal distributions, but with non-zero means
-  # it doesn't have a closed form (that I know of), so I will compute credible
-  # intervals of effectiveness by Monte Carlo simulation.
-
-
-
-  # draws of the coefficients from the posteriors given in Symons et al., taken
-  # as independent, since the posterior correlation is not given. The relative
-  # effectiveness is linear in susceptibility k, g*(k) = 1 + r (1 - k), with
-  # r = beta_1 / beta_0, so each draw needs only its r
-
-  set.seed(seed)
-  beta_0_sims <- rnorm(n_sims, -1.68, 0.11)
-  beta_1_sims <- rnorm(n_sims, 0.78, 0.12)
-  ratio_sims <- beta_1_sims / beta_0_sims
-
-  # perform calculations:
-
-  # define the weights for net effectiveness and effective coverage, from the
-  # population at risk (potential infected population, in absence of
-  # interventions): population times PfPR in 2000, at the cells with a
-  # susceptibility map (all but 1e-5 of the population at risk)
-
   # convert a raster layer into spatial weights (pixels sum to 1) to get averages
   # over space
   normalise <- function(x) {
@@ -198,196 +118,216 @@ compute_epi_impact <- function(years_plot, n_sims, seed, net_type_files,
     x / total
   }
 
-  population_at_risk <- terra::mask(pop_all * pr2000, ir)
-
-  # cube of population at risk weights, by year, for effective coverage
-  infection_weights <- sapp(population_at_risk, normalise)
-
-  # cube of population at risk weights fixed at 2000, for net effectiveness:
-  # the effectiveness a pyrethroid-only LLIN would have for each person at
-  # risk, whether or not nets are in use there, so its trend is that of
-  # resistance alone
-  risk_weights <- rep(normalise(population_at_risk[["2000"]]), nlyr(ir))
-  names(risk_weights) <- names(ir)
-
+  # cube of population at risk (potential infected population, in absence of
+  # interventions) weights, by year: population times PfPR in 2000
+  infection_weights <- sapp(terra::mask(pop_all * pr2000, ir), normalise)
 
   # Effective coverage: net use times effectiveness, averaged across Africa
   # over the population at risk, for each group of net types. PBO and dual-AI
   # nets are assumed to be fully effective (effectiveness 1), losing none of it
-  # to resistance; pyrethroid-only nets have g*(k). Without resistance, all
-  # nets would be fully effective, and effective coverage would be the average
-  # net use. If net use was 100% for all populations at risk, this would equal
-  # 1. It is lower due to imperfect net coverage (but not due to IR).
+  # to resistance; pyrethroid-only nets' effectiveness is computed from the
+  # posterior (compute_epi_draws()). Without resistance, all nets would be
+  # fully effective, and effective coverage would be the average net use. If
+  # net use was 100% for all populations at risk, this would equal 1. It is
+  # lower due to imperfect net coverage (but not due to IR).
   coverage <- function(x) {
     global(x * infection_weights, fun = "sum", na.rm = TRUE)$sum
   }
+  coverage_pyrethroid_use <- coverage(nets_by_type$pyrethroid)
   coverage_pbo <- coverage(nets_by_type$pbo)
   coverage_dual_ai <- coverage(nets_by_type$dual_ai)
-  coverage_no_ir <- coverage(nets_by_type$pyrethroid) + coverage_pbo +
-    coverage_dual_ai
-
-
-  # Now average epi impacts, accounting for IR (both per net and at population
-  # level)
-
-  # cube of net relative epi impact of a net in each pixel (using the posterior
-  # mean function)
-  relative_epi_impact_mean <- terra::app(ir, epi_function_mean)
-  names(relative_epi_impact_mean) <- names(ir)
-
-  # average the epi impact of a net across Africa, over the population at
-  # risk, to get the temporal trends in impact of each net (using the posterior
-  # mean function)
-  average_epi_impact_mean <- global(
-    x = relative_epi_impact_mean * risk_weights,
-    fun = "sum",
-    na.rm = TRUE
-  )
-
-  # the effective coverage of pyrethroid-only nets across Africa (using the
-  # posterior mean function)
-  coverage_pyrethroid_mean <- coverage(
-    nets_by_type$pyrethroid * relative_epi_impact_mean
-  )
-
-
-  # classes of 2025 susceptibility, to divide up the map into regions by
-  # which nets give more effective coverage for a fixed budget: pyrethroid-only
-  # nets above the highest break-even susceptibility k*, next-generation nets
-  # below the lowest, and uncertain between (break_even)
-  susceptibility_2025 <- ir[["2025"]]
-  bands <- 1 + (susceptibility_2025 >= break_even[["low"]]) +
-    (susceptibility_2025 > break_even[["high"]])
-  levels(bands) <- data.frame(
-    id = 1:3,
-    band = c("next_generation", "uncertain", "pyrethroid")
-  )
-  band_names <- c("pyrethroid", "uncertain", "next_generation")
-
-  # create population at risk weights subsetted to each of these bands, to
-  # compute effectiveness over time in each
-  risk_weights_bands <- lapply(band_names, function(band) {
-    sapp(risk_weights * (bands == band), normalise)
-  })
-  names(risk_weights_bands) <- band_names
-
-  # compute posterior means for these
-  average_epi_impact_mean_bands <- lapply(risk_weights_bands, function(weights) {
-    global(
-      x = relative_epi_impact_mean * weights,
-      fun = "sum",
-      na.rm = TRUE
-    )$sum
-  })
-
-  # the population at risk in 2025 by susceptibility, in bins of 1e-4, for the
-  # classes' shares of it and their mean effectiveness under each model
-  people_by_susceptibility <- terra::zonal(
-    population_at_risk[["2025"]],
-    round(susceptibility_2025 * 1e4),
-    fun = "sum",
-    na.rm = TRUE
-  ) %>%
-    as_tibble(.name_repair = ~ c("susceptibility", "people")) %>%
-    mutate(susceptibility = susceptibility / 1e4)
-  weighted_total <- function(x) {
-    global(x, "sum", na.rm = TRUE)$sum
-  }
 
   # each type's share of net use in 2024, Africa-wide: the people using a net
   # of the type over the people using any
   use_2024 <- vapply(nets_by_type, function(nets) {
-    weighted_total(nets[["2024"]] * pop_all[["2024"]])
+    global(nets[["2024"]] * pop_all[["2024"]], "sum", na.rm = TRUE)$sum
   }, numeric(1))
-  type_shares_2024 <- use_2024 / sum(use_2024)
 
-  # Now do the same under a Monte Carlo simulation, to get credible intervals on
-  # these. As g*(k) is linear in k, a weighted sum of it over pixels is
-  # S_w + r (S_w - S_wk), with S_w the sum of the weights and S_wk the sum of
-  # the weights times k, over the pixels with a susceptibility. So the sums are
-  # computed once per year, and each draw is arithmetic on them: years x draws
-  weighted_sums <- function(weights) {
-    weights <- terra::mask(weights, ir)
-    list(w = global(weights, "sum", na.rm = TRUE)$sum,
-         wk = global(weights * ir, "sum", na.rm = TRUE)$sum)
-  }
-  simulate_impact <- function(weights) {
-    sums <- weighted_sums(weights)
-    impact <- sums$w + outer(sums$w - sums$wk, ratio_sims)
-    rownames(impact) <- years_plot
-    impact
-  }
-  individual_net_impact_sims <- simulate_impact(risk_weights)
-  individual_net_impact_sims_bands <- lapply(risk_weights_bands,
-                                             simulate_impact)
-  # all nets' effective coverage, the PBO and dual-AI nets' being certain
-  coverage_sims <- simulate_impact(nets_by_type$pyrethroid * infection_weights) +
-    coverage_pbo + coverage_dual_ai
-
-  # check: at the posterior mean coefficients (r = -0.46), the sums give what
-  # the map does
-  mean_check <- weighted_sums(risk_weights)
-  stopifnot(isTRUE(all.equal(
-    mean_check$w - 0.46 * (mean_check$w - mean_check$wk),
-    average_epi_impact_mean$sum, tolerance = 1e-6)))
-
-
-  # compute credible intervals of each of these over time: the 50% intervals
-  # the panels show, and 95% intervals for the text
-  intervals <- function(sims) {
-    cis <- apply(sims, 1, quantile, c(0.25, 0.75, 0.025, 0.975))
-    tibble(
-      lower = cis[1, ],
-      upper = cis[2, ],
-      lower_95 = cis[3, ],
-      upper_95 = cis[4, ]
-    )
-  }
-
-  # panel A: the effectiveness of a net over time
-  panel_a_data <- tibble(
-    year = years_plot,
-    mean = average_epi_impact_mean$sum
-  ) %>%
-    bind_cols(intervals(individual_net_impact_sims))
-
-  # panel B: effective coverage by net type, its total and interval, and the
-  # counterfactual without IR
-  panel_b_data <- tibble(
-    year = years_plot,
-    pyrethroid = coverage_pyrethroid_mean,
-    pbo = coverage_pbo,
-    dual_ai = coverage_dual_ai,
-    mean = pyrethroid + pbo + dual_ai,
-    mean_no_ir = coverage_no_ir
-  ) %>%
-    bind_cols(intervals(coverage_sims))
-
-  # panel C: the bands, within the limits of transmission, in memory to be
-  # saved (not in a temporary file)
-  bands_mask <- terra::toMemory(terra::mask(bands, pf_water_mask))
-
-  # panel D: the effectiveness of a net in each band
-  panel_d_data <- bind_rows(lapply(band_names, function(band_name) {
-    tibble(
-      year = years_plot,
-      band = band_name,
-      mean = average_epi_impact_mean_bands[[band_name]]
-    ) %>%
-      bind_cols(intervals(individual_net_impact_sims_bands[[band_name]]))
-  })) %>%
-    mutate(
-      band = factor(band,
-                    levels = band_names)
-    )
-
-  list(panel_a_data = panel_a_data,
-       panel_b_data = panel_b_data,
-       panel_d_data = panel_d_data,
-       bands = terra::wrap(bands_mask),
-       people_by_susceptibility = people_by_susceptibility,
-       type_shares_2024 = type_shares_2024,
+  list(coverage = tibble(
+         year = years_plot,
+         pyrethroid_use = coverage_pyrethroid_use,
+         pbo = coverage_pbo,
+         dual_ai = coverage_dual_ai,
+         no_ir = coverage_pyrethroid_use + coverage_pbo + coverage_dual_ai
+       ),
+       type_shares_2024 = use_2024 / sum(use_2024),
        latest_nets = latest_nets)
+}
+
+# The two-stage posterior of llin_effective susceptibility k as the panels
+# weight it. The draws are those `map` of R/two_stage_maps.R summarises: 1000
+# paired draws of each LLIN pyrethroid's two-stage model
+# (R/two_stage_predictions.R), combined draw by draw with the llin_effective
+# weights (llin_weights), at every cell with a population at risk in any year
+# or within the limits of transmission. For each draw and year:
+#   a        the mean of k over the population at risk in 2000 (panel A)
+#   b        the sum of k times the pyrethroid-only nets' use and the year's
+#            population at risk weights (panel B); b_weight the sum of the
+#            weights
+#   d        the sum of k times the population at risk in 2000 weights in each
+#            class of 2025 susceptibility, under each rule (panel D);
+#            d_weight the sum of the weights. The classes are those above
+#            the highest break-even susceptibility k* (break_even), below the
+#            lowest, and between; the rule "mean" puts a cell in a class by its
+#            posterior mean, and rule p by the posterior probability p (in
+#            `confidence`) of being above the highest or below the lowest
+#            k*, uncertain otherwise
+# and for each cell, its population at risk in 2025 and the posterior mean,
+# quantiles (probs) and probabilities of being above the highest k* and below
+# the lowest of its 2025 susceptibility (panel C). The cells are processed in
+# forked workers (IR_CUBE_MAP_WORKERS), in chunks of chunk_size cells, each
+# holding all the draws of its cells; the results do not depend on either
+compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
+                              break_even, confidence, probs,
+                              chunk_size = 2500) {
+  terraOptions(todisk = TRUE)
+  baseline_year <- 1995
+  years_all <- baseline_year:max(years_plot)
+  year_index <- match(years_plot, years_all)
+  index_2025 <- match(2025, years_plot)
+
+  # the cells, and their weights: population at risk as compute_epi_impact()
+  ir <- rast(ir_map_files("llin_effective", years_plot))
+  names(ir) <- years_plot
+  pr2000 <- rast("data/clean/pfpr_2000.tif")
+  pop_all <- c(rast("data/clean/pop_cube.tif"),
+               rast("data/clean/pop_cube_future.tif"))
+  names(pop_all) <- str_remove(names(pop_all), "^pop_")
+  population_at_risk <- terra::mask(pop_all[[as.character(years_plot)]] *
+                                      pr2000, ir)
+  nets <- rast(net_type_files[["pyrethroid"]])
+  names(nets) <- str_remove(names(nets), "^nets_")
+  nets <- post_pad_cube(nets, max(years_plot))[[as.character(years_plot)]]
+  selected <- terra::app(population_at_risk, sum, na.rm = TRUE) > 0 |
+    !is.na(rast("data/clean/pfpr_water_mask.tif"))
+  selected <- terra::mask(selected, ir[["2025"]])
+  cells <- which(terra::values(selected, mat = FALSE) == 1)
+  country <- as.character(terra::extract(
+    rast("data/clean/country_raster.tif"), cells)$country_name)
+  cells <- cells[!is.na(country)]
+  country <- country[!is.na(country)]
+  at_cells <- function(x) {
+    values <- as.matrix(terra::extract(x, cells))
+    values[is.na(values)] <- 0
+    values
+  }
+  people <- at_cells(population_at_risk)
+  stopifnot(isTRUE(all.equal(
+    colSums(people),
+    global(population_at_risk, "sum", na.rm = TRUE)$sum,
+    check.attributes = FALSE)))
+  weight_a <- people[, "2000"] / sum(people[, "2000"])
+  weight_b <- sweep(people, 2, colSums(people), "/") * at_cells(nets)
+  people_2025 <- people[, "2025"]
+  map_2025 <- at_cells(ir[["2025"]])[, 1]
+  rm(people)
+
+  # the draws of each pyrethroid (the map's: same draws, batches and seeds)
+  data <- modelled_bioassays(baseline_year)$df
+  setups <- lapply(names(llin_weights), function(type) {
+    two_stage_setup(type, years = years_all, data = data, n_draws = 1000,
+                    batch_size = 100, baseline_year = baseline_year)
+  })
+  stopifnot(length(unique(lapply(setups, `[[`, "design"))) == 1,
+            length(unique(lapply(setups, `[[`, "batches"))) == 1)
+  n_draws <- setups[[1]]$n_draws
+
+  # the classes of each cell under each rule, from the draws of its 2025
+  # susceptibility (draws x cells): 1 pyrethroid, 2 uncertain, 3
+  # next-generation
+  class_names <- c("pyrethroid", "uncertain", "next_generation")
+  rules <- c("mean", as.character(confidence))
+  classify <- function(k_2025) {
+    mean <- colMeans(k_2025)
+    above <- colMeans(k_2025 > break_even[["high"]])
+    below <- colMeans(k_2025 < break_even[["low"]])
+    by_mean <- 3 - (mean >= break_even[["low"]]) -
+      (mean > break_even[["high"]])
+    by_probability <- sapply(confidence, function(p) {
+      if_else(above >= p, 1, if_else(below >= p, 3, 2))
+    })
+    classes <- cbind(by_mean, by_probability)
+    colnames(classes) <- paste0("class_", rules)
+    list(classes = classes,
+         stats = cbind(mean = mean, above = above, below = below,
+                       t(apply(k_2025, 2, quantile, probs)), classes))
+  }
+
+  # the sums of a group of cells (rows of the cells above): the draws of all
+  # their cells and years, a chunk of cells at a time, then weighted and summed
+  group_sums <- function(group) {
+    group_cells <- two_stage_cells(setups[[1]], cells[group], country[group])
+    chunks <- split(seq_along(group), ceiling(seq_along(group) / chunk_size))
+    sums <- list(
+      a = matrix(0, n_draws, length(years_plot)),
+      b = matrix(0, n_draws, length(years_plot)),
+      d = array(0, c(n_draws, length(rules) * 3, length(years_plot))),
+      d_weight = numeric(length(rules) * 3)
+    )
+    stats <- vector("list", length(chunks))
+    for (i in seq_along(chunks)) {
+      rows <- group[chunks[[i]]]
+      chunk <- two_stage_chunk(setups[[1]], group_cells, chunks[[i]])
+      k <- array(0, c(n_draws, length(rows), length(years_plot)))
+      start <- 0
+      for (b in seq_along(setups[[1]]$batches)) {
+        index <- start + seq_along(setups[[1]]$batches[[b]])
+        for (t in seq_along(setups)) {
+          logit <- two_stage_logit_batch(setups[[t]], b, chunk)$two_stage
+          for (j in seq_along(years_plot)) {
+            k[index, , j] <- k[index, , j] +
+              llin_weights[[t]] * plogis(logit[[year_index[j]]])
+          }
+        }
+        start <- max(index)
+      }
+      # check: these are the map's draws
+      stopifnot(max(abs(colMeans(k[, , index_2025]) - map_2025[rows])) <
+                  1e-5)
+      classified <- classify(k[, , index_2025])
+      class_weights <- do.call(cbind, lapply(seq_along(rules), function(r) {
+        sapply(1:3, function(c) weight_a[rows] * (classified$classes[, r] == c))
+      }))
+      for (j in seq_along(years_plot)) {
+        sums$a[, j] <- sums$a[, j] + k[, , j] %*% weight_a[rows]
+        sums$b[, j] <- sums$b[, j] + k[, , j] %*% weight_b[rows, j]
+        sums$d[, , j] <- sums$d[, , j] + k[, , j] %*% class_weights
+      }
+      sums$d_weight <- sums$d_weight + colSums(class_weights)
+      stats[[i]] <- cbind(cell = cells[rows], people_2025 = people_2025[rows],
+                          classified$stats)
+      rm(k, chunk)
+      if (i %% 10 == 0) {
+        message(format(Sys.time(), "%H:%M:%S"), " cells ", min(group), "-",
+                max(group), ": ", i, " of ", length(chunks), " chunks")
+      }
+    }
+    sums$stats <- do.call(rbind, stats)
+    sums
+  }
+
+  n_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
+  groups <- split(seq_along(cells),
+                  ceiling(seq_along(cells) /
+                            ceiling(length(cells) / n_workers)))
+  done <- parallel::mclapply(groups, group_sums, mc.cores = n_workers,
+                             mc.preschedule = FALSE)
+  failed <- !vapply(done, is.list, logical(1))
+  if (any(failed)) {
+    stop("drawing failed for ", sum(failed), " groups of cells: ",
+         paste(unique(unlist(done[failed])), collapse = "; "))
+  }
+  add <- function(name) Reduce(`+`, lapply(done, `[[`, name))
+  d_names <- paste(rep(rules, each = 3), class_names, sep = ":")
+  list(
+    years = years_plot,
+    a = `colnames<-`(add("a"), years_plot),
+    b = `colnames<-`(add("b"), years_plot),
+    b_weight = colSums(weight_b),
+    d = `dimnames<-`(add("d"), list(NULL, d_names, years_plot)),
+    d_weight = setNames(add("d_weight"), d_names),
+    cells = as_tibble(do.call(rbind, lapply(done, `[[`, "stats")))
+  )
 }
 
 # The break-even effectiveness of a pyrethroid-only net (#75). For a fixed
@@ -481,11 +421,64 @@ mint_effectiveness <- mint_index %>%
   group_by(susceptibility) %>%
   summarise(effectiveness = median(effectiveness))
 
+# Encode Symons et al. PMI function for relative effectiveness of ITNs at
+# reducing logit-PfPR (reduction in on the log-odds ratio), compared to in the absence
+# of resistance.
+
+# when susceptibility is 100%, the ITN effectiveness parameter has full effect
+# (multiplier 1), when susceptibility is 0%, the ITN effectiveness parameter has
+# 54% (multiplier 0.54).
+
+# The log-odds ratio for malaria infection under full ITN coverage (relative to
+# no ITN coverage) is -1.68, which corresponds to an odds ratio of 0.186374.
+# With a fully-resistant vector population, this is would reduce to 54% of its
+# previous value, -0.9072, giving an odds ratio of 0.4036529.
+
+# Alternative interpretation: the odds ratio for a population with 100% coverage
+# and 100% resistance is equivalent to that of a population with 54% coverage
+# and 0% resistance.
+
+# the posteriors of the parameters behind this model:
+
+# beta_0 = beta_{physical} = 'ITN_physical'
+#   beta_0 ~ N(-1.68, 0.11^2)
+# beta_1 = beta_{penalty} = 'ITN_insecticidal_penalty'
+#   beta_1 ~ N(0.78, 0.12^2)
+
+# the log odds (contribution to the linear predictor) is computed from these
+# parameters, with a non-linear function of ITN coverage f(ITN) and
+# susceptibility k:
+
+#   log_odds = beta_0 * f(ITN) + beta_1 * (1 - k) * f(ITN)
+#            = f(ITN) * (beta_0 + beta_1 * (1 - k))
+
+# we can therefore factorise to get a net effectiveness measure g(k):
+#   log_odds = f(ITN) * g(k)
+#   g(k) = beta_0 + beta_1 * (1 - k)
+
+# from which we can obtain a *relative* net effectiveness, giving the
+# effectiveness relative to a fully susceptible population (k = 1):
+#   g*(k) = g(k) / g(1)
+
+# since:
+#   g(1) = beta_0 + beta_1 * (1 - k)
+#        = beta_0 + beta_1 * 0
+#        = beta_0
+# we have:
+#   g*(k) = g(k) / beta_0
+#         = (beta_0 + beta_1 * (1 - k)) / beta_0
+#         = 1 + (beta_1 * (1 - k)) / beta_0
+
+# which is used at the posterior means, r = beta_1 / beta_0 = -0.46. The
+# uncertainty shown is that of the susceptibility maps (compute_epi_draws()).
+# g*(k) is linear in k, so the effectiveness at a weighted mean of k is the
+# weighted mean of the effectiveness
+
 # Two models of the relative effectiveness e(k) of a pyrethroid-only net, as a
 # function of susceptibility k (bioassay mortality), 1 at k = 1, both the
 # nets' effect on the log-odds of prevalence:
 #   symons    Symons et al., at the posterior mean of their coefficients
-#             (epi_function_mean() in compute_epi_impact())
+#             (above)
 #   churcher  Churcher et al. 2024's MINT simulations, above, interpolated
 #             linearly between the simulated k
 effectiveness_models <- list(
@@ -538,31 +531,98 @@ net_type_files <- c(pyrethroid = net_use_file(selection_design()),
 
 epi <- cached_figure_data(
   "temporary/fig_ento_epi_impact.rds", compute_epi_impact,
-  args = list(years_plot = years_plot, n_sims = 1000, seed = 2026,
-              net_type_files = net_type_files,
-              break_even = break_even_susceptibility),
+  args = list(years_plot = years_plot, net_type_files = net_type_files),
   sources = c("R/packages.R", "R/functions.R", "R/model_covariates.R"),
   inputs = c(ir_map_files("llin_effective", years_plot), net_type_files,
-             "data/clean/pfpr_water_mask.tif", "data/clean/pfpr_2000.tif",
-             "data/clean/pop_cube.tif", "data/clean/pop_cube_future.tif")
+             "data/clean/pfpr_2000.tif", "data/clean/pop_cube.tif",
+             "data/clean/pop_cube_future.tif")
 )
-panel_a_data <- epi$panel_a_data
-panel_b_data <- epi$panel_b_data
-panel_d_data <- epi$panel_d_data
-bands_mask <- terra::unwrap(epi$bands)
+
+# the posterior of susceptibility, as the panels weight it (hours, with
+# IR_CUBE_MAP_WORKERS forked workers; see compute_epi_draws())
+llin_weights <- unlist(readRDS("temporary/ingredient_weights.RDS"))
+draws <- cached_figure_data(
+  "temporary/fig_ento_epi_impact_draws.rds", compute_epi_draws,
+  args = list(years_plot = years_plot, net_type_files = net_type_files,
+              llin_weights = llin_weights,
+              break_even = break_even_susceptibility,
+              confidence = c(0.8, 0.9, 0.95),
+              probs = c(0.025, 0.05, 0.1, 0.2, 0.5, 0.8, 0.9, 0.95, 0.975)),
+  sources = c("R/packages.R", "R/functions.R", "R/model_covariates.R",
+              "R/bioassay_subset.R", "R/two_stage_predictions.R"),
+  inputs = c(ir_map_files("llin_effective", years_plot), net_type_files,
+             two_stage_figure_inputs(names(llin_weights)))
+)
 latest_nets <- epi$latest_nets
+
+# The rule for the classes of panels C and D: "mean", by the posterior mean
+# 2025 susceptibility, or a confidence (0.8, 0.9 or 0.95), by the posterior
+# probability of being above the highest break-even susceptibility or below
+# the lowest (compute_epi_draws()); and the credible intervals of the ribbons
+classification <- "mean"
+interval <- 0.95
+
+# the posterior mean and credible interval of draws x years
+posterior_summary <- function(x) {
+  tibble(
+    year = years_plot,
+    mean = colMeans(x),
+    lower = apply(x, 2, quantile, (1 - interval) / 2),
+    upper = apply(x, 2, quantile, 1 - (1 - interval) / 2)
+  )
+}
+symons <- effectiveness_models$symons
+
+# panel A: the effectiveness of a pyrethroid-only net at the mean
+# susceptibility over the population at risk in 2000
+panel_a_data <- posterior_summary(symons(draws$a))
+
+# panel B: effective coverage by net type, its total and interval, and the
+# counterfactual without IR. The pyrethroid-only nets' is the sum of their
+# weights times the effectiveness at the weighted mean susceptibility
+stopifnot(isTRUE(all.equal(draws$b_weight, epi$coverage$pyrethroid_use,
+                           check.attributes = FALSE, tolerance = 1e-6)))
+coverage_pyrethroid <- sweep(
+  symons(sweep(draws$b, 2, draws$b_weight, "/")), 2, draws$b_weight, "*"
+)
+coverage_total <- sweep(coverage_pyrethroid, 2,
+                        epi$coverage$pbo + epi$coverage$dual_ai, "+")
+panel_b_data <- epi$coverage %>%
+  mutate(
+    pyrethroid = colMeans(coverage_pyrethroid),
+    mean = pyrethroid + pbo + dual_ai,
+    mean_no_ir = no_ir
+  ) %>%
+  bind_cols(select(posterior_summary(coverage_total), lower, upper))
+
+# panel C: the classes of each cell under the rule, within the limits of
+# transmission
+class_names <- c("pyrethroid", "uncertain", "next_generation")
+bands <- rast(rast("data/clean/raster_mask.tif"))
+bands[draws$cells$cell] <- draws$cells[[paste0("class_", classification)]]
+levels(bands) <- data.frame(id = 1:3, band = class_names)
+bands_mask <- terra::mask(bands, rast("data/clean/pfpr_water_mask.tif"))
+
+# panel D: the effectiveness of a pyrethroid-only net in each class, at the
+# mean susceptibility over the class's population at risk in 2000
+panel_d_data <- bind_rows(lapply(class_names, function(band_name) {
+  column <- paste(classification, band_name, sep = ":")
+  posterior_summary(symons(draws$d[, column, ] / draws$d_weight[[column]])) %>%
+    mutate(band = band_name)
+})) %>%
+  mutate(band = factor(band, levels = class_names))
 
 
 # numbers for the text --------------------------------------------------------
 
-# percentages: a mean with its 50% and 95% intervals
-with_intervals <- function(mean, lower, upper, lower_95, upper_95) {
-  sprintf("%.1f [50%%: %.1f, %.1f; 95%%: %.1f, %.1f]", 100 * mean,
-          100 * lower, 100 * upper, 100 * lower_95, 100 * upper_95)
+# percentages: a mean with its credible interval
+with_interval <- function(mean, lower, upper) {
+  sprintf("%.1f [%.1f, %.1f]", 100 * mean, 100 * lower, 100 * upper)
 }
 
-cat("\nAfrica-wide effective coverage (% of the population at risk, as panel B;",
-    "pyrethroid-only nets at the posterior mean of Symons et al.):\n")
+cat(sprintf(paste0("\nAfrica-wide effective coverage (%% of the population at",
+                   " risk, as panel B; posterior mean [%.0f%% credible",
+                   " interval]):\n"), 100 * interval))
 panel_b_data %>%
   filter(year %in% c(2017, 2024)) %>%
   mutate(lost = mean_no_ir - mean) %>%
@@ -572,15 +632,13 @@ panel_b_data %>%
       year, ": pyrethroid-only ", sprintf("%.1f", 100 * pyrethroid),
       ", PBO ", sprintf("%.1f", 100 * pbo),
       ", dual-AI ", sprintf("%.1f", 100 * dual_ai),
-      "\n  total ", with_intervals(mean, lower, upper, lower_95, upper_95),
+      "\n  total ", with_interval(mean, lower, upper),
       "\n  no resistance ", sprintf("%.1f", 100 * mean_no_ir),
       "\n  lost to resistance (percentage points) ",
-      with_intervals(lost, mean_no_ir - upper, mean_no_ir - lower,
-                     mean_no_ir - upper_95, mean_no_ir - lower_95),
+      with_interval(lost, mean_no_ir - upper, mean_no_ir - lower),
       "\n  lost to resistance (% of no resistance) ",
-      with_intervals(lost / mean_no_ir, 1 - upper / mean_no_ir,
-                     1 - lower / mean_no_ir, 1 - upper_95 / mean_no_ir,
-                     1 - lower_95 / mean_no_ir)
+      with_interval(lost / mean_no_ir, 1 - upper / mean_no_ir,
+                    1 - lower / mean_no_ir)
     )
   ) %>%
   pull(text) %>%
@@ -590,8 +648,7 @@ cat("\nEffectiveness of a pyrethroid-only LLIN, weighted by the population at",
     "risk in 2000 (%, panel A):\n")
 panel_a_data %>%
   filter(year %in% c(2017, 2024, 2030)) %>%
-  mutate(text = paste0(year, ": ", with_intervals(mean, lower, upper,
-                                                  lower_95, upper_95))) %>%
+  mutate(text = paste0(year, ": ", with_interval(mean, lower, upper))) %>%
   pull(text) %>%
   cat(sep = "\n")
 
@@ -618,42 +675,43 @@ break_even_thresholds %>%
   pull(text) %>%
   cat(sep = "\n")
 
-# the classes' shares of the population at risk in 2025, and their mean 2025
-# effectiveness over it under each model
-band_summary <- epi$people_by_susceptibility %>%
-  mutate(
-    band = case_when(
-      susceptibility > break_even_susceptibility[["high"]] ~ "pyrethroid",
-      susceptibility >= break_even_susceptibility[["low"]] ~ "uncertain",
-      .default = "next_generation"
-    )
-  ) %>%
-  group_by(band) %>%
+# the classes' shares of the population at risk in 2025 under each rule, and
+# their mean 2025 effectiveness over it under each model, at the posterior
+# mean susceptibility
+band_summary <- draws$cells %>%
+  select(people_2025, mean, starts_with("class_")) %>%
+  pivot_longer(starts_with("class_"), names_to = "rule",
+               names_prefix = "class_", values_to = "class") %>%
+  mutate(band = class_names[class]) %>%
+  group_by(rule, band) %>%
   summarise(
-    share = sum(people),
-    symons = weighted.mean(effectiveness_models$symons(susceptibility),
-                           people),
-    churcher = weighted.mean(effectiveness_models$churcher(susceptibility),
-                             people)
+    people = sum(people_2025),
+    symons = weighted.mean(effectiveness_models$symons(mean), people_2025),
+    churcher = weighted.mean(effectiveness_models$churcher(mean),
+                             people_2025),
+    .groups = "drop"
   ) %>%
-  mutate(share = share / sum(share))
+  group_by(rule) %>%
+  mutate(share = people / sum(people)) %>%
+  ungroup()
 
-cat("\nClasses of 2025 susceptibility (share: % of the population at risk in",
-    "2025; effectiveness: its mean over them under each model, %):\n")
+cat("\nClasses of 2025 susceptibility by rule (share: % of the population at",
+    "risk in 2025; effectiveness: its mean over them under each model at the",
+    "posterior mean susceptibility, %):\n")
 band_summary %>%
-  mutate(text = sprintf(paste("%s: share %.1f, effectiveness %.1f (Symons),",
-                              "%.1f (Churcher)"),
-                        band, 100 * share, 100 * symons,
+  mutate(text = sprintf(paste("%s, %s: share %.1f, effectiveness %.1f",
+                              "(Symons), %.1f (Churcher)"),
+                        rule, band, 100 * share, 100 * symons,
                         100 * churcher)) %>%
   pull(text) %>%
   cat(sep = "\n")
 
 # the gain in effective coverage from buying pyrethroid-only instead of dual-AI
-# nets with the same budget, where pyrethroid-only nets are the better buy:
-# (P_dual + D) / (P_pyr + D) e - 1, linear in e, so its mean over the
-# population at risk is that at the class's mean effectiveness
+# nets with the same budget, where pyrethroid-only nets are the better buy
+# under the rule: (P_dual + D) / (P_pyr + D) e - 1, linear in e, so its mean
+# over the population at risk is that at the class's mean effectiveness
 pyrethroid_better <- band_summary %>%
-  filter(band == "pyrethroid")
+  filter(rule == classification, band == "pyrethroid")
 cat("\nGain in effective coverage from pyrethroid-only nets, where they are",
     "the better buy (% of that from dual-AI nets):\n")
 expand_grid(model = names(effectiveness_models),
@@ -667,7 +725,6 @@ expand_grid(model = names(effectiveness_models),
   ) %>%
   pull(text) %>%
   cat(sep = "\n")
-
 
 # panel A: Declining effectiveness of nets
 # mean and CI of "individual_net_impact" over time
@@ -923,13 +980,13 @@ border_col <- grey(0.4)
 
 # the colours of panel B's pyrethroid-only and dual-AI nets for the classes
 # where they are the most cost-effective, and for the uncertain class a colour
-# halfway between them, lightened halfway to white. The thresholds are in the
-# log, for the caption
+# halfway between them, lightened three quarters of the way to white. The
+# thresholds are in the log, for the caption
 pyrethroid_col <- net_type_cols[["pyrethroid"]]
 next_generation_col <- net_type_cols[["dual_ai"]]
 uncertain_col <- colorRampPalette(
   c(colorRampPalette(c(pyrethroid_col, next_generation_col))(3)[2], "white")
-)(3)[2]
+)(5)[4]
 band_cols <- c(pyrethroid = pyrethroid_col,
                uncertain = uncertain_col,
                next_generation = next_generation_col)
