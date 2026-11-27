@@ -90,7 +90,13 @@ effectiveness_curves <- ggplot(
   ) +
   scale_y_continuous(
     labels = scales::percent,
+    breaks = seq(0, 1, by = 0.25),
+    expand = expansion(mult = 0.02),
     name = "LLIN effectiveness"
+  ) +
+  # capped at 100%: the few settings simulated above it are clipped
+  coord_cartesian(
+    ylim = c(0, 1)
   ) +
   scale_colour_manual(
     values = model_cols,
