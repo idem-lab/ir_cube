@@ -6,13 +6,7 @@
 
 # three panel plot:
 
-# A) Declining effectiveness of nets: timeseries with ribbon of uncertainty
-# giving the effectiveness, relative to a fully susceptible population, that a
-# pyrethroid-only LLIN would have for each person at risk, whether or not nets
-# are in use there: averaged across Africa over the population at risk
-# (population times PfPR, both in 2000, fixed over time)
-
-# B) Effective coverage: net use times effectiveness, summed over three groups
+# A) Effective coverage: net use times effectiveness, summed over three groups
 # of net types (R/prep_net_use_pyrethroid.R) and averaged across Africa over
 # the population at risk of each year (the year's population times PfPR in
 # 2000), as stacked areas: dual-AI nets, PBO nets, then pyrethroid-only nets
@@ -21,6 +15,12 @@
 # to resistance. The line above the stack is the counterfactual without
 # resistance, all nets in use fully effective; the gap between them is the
 # coverage lost to resistance
+
+# B) Declining effectiveness of nets: timeseries with ribbon of uncertainty
+# giving the effectiveness, relative to a fully susceptible population, that a
+# pyrethroid-only LLIN would have for each person at risk, whether or not nets
+# are in use there: averaged across Africa over the population at risk
+# (population times PfPR, both in 2000, fixed over time)
 
 # C) Spatial variation in effectiveness: where pyrethroid-only or dual-AI nets
 # give more effective coverage for the same budget in 2025
@@ -159,9 +159,9 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 # (R/two_stage_predictions.R), combined draw by draw with the llin_effective
 # weights (llin_weights), at every cell with a population at risk in any year
 # or within the limits of transmission. For each draw and year:
-#   a        the mean of k over the population at risk in 2000 (panel A)
+#   a        the mean of k over the population at risk in 2000 (panel B)
 #   b        the sum of k times the pyrethroid-only nets' use and the year's
-#            population at risk weights (panel B); b_weight the sum of the
+#            population at risk weights (panel A); b_weight the sum of the
 #            weights
 # and for each cell, its population at risk in 2025, and the posterior mean
 # of its 2025 susceptibility and the posterior probability that it is above
@@ -530,11 +530,11 @@ posterior_summary <- function(x) {
 }
 symons <- effectiveness_models$symons
 
-# panel A: the effectiveness of a pyrethroid-only net at the mean
+# panel B: the effectiveness of a pyrethroid-only net at the mean
 # susceptibility over the population at risk in 2000
-panel_a_data <- posterior_summary(symons(draws$a))
+panel_b_data <- posterior_summary(symons(draws$a))
 
-# panel B: effective coverage by net type, its total and interval, and the
+# panel A: effective coverage by net type, its total and interval, and the
 # counterfactual without IR. The pyrethroid-only nets' is the sum of their
 # weights times the effectiveness at the weighted mean susceptibility
 stopifnot(isTRUE(all.equal(draws$b_weight, epi$coverage$pyrethroid_use,
@@ -544,7 +544,7 @@ coverage_pyrethroid <- sweep(
 )
 coverage_total <- sweep(coverage_pyrethroid, 2,
                         epi$coverage$pbo + epi$coverage$dual_ai, "+")
-panel_b_data <- epi$coverage %>%
+panel_a_data <- epi$coverage %>%
   mutate(
     pyrethroid = colMeans(coverage_pyrethroid),
     mean = pyrethroid + pbo + dual_ai,
@@ -580,9 +580,9 @@ with_interval <- function(mean, lower, upper) {
 }
 
 cat(sprintf(paste0("\nAfrica-wide effective coverage (%% of the population at",
-                   " risk, as panel B; posterior mean [%.0f%% credible",
+                   " risk, as panel A; posterior mean [%.0f%% credible",
                    " interval]):\n"), 100 * interval))
-panel_b_data %>%
+panel_a_data %>%
   filter(year %in% c(2017, 2024)) %>%
   mutate(lost = mean_no_ir - mean) %>%
   rowwise() %>%
@@ -604,8 +604,8 @@ panel_b_data %>%
   cat(sep = "\n")
 
 cat("\nEffectiveness of a pyrethroid-only LLIN, weighted by the population at",
-    "risk in 2000 (%, panel A):\n")
-panel_a_data %>%
+    "risk in 2000 (%, panel B):\n")
+panel_b_data %>%
   filter(year %in% c(2017, 2024, 2030)) %>%
   mutate(text = paste0(year, ": ", with_interval(mean, lower, upper))) %>%
   pull(text) %>%
@@ -668,23 +668,23 @@ cat("\nGain in effective coverage from pyrethroid-only nets, where they are",
     "the better buy (% of that from dual-AI nets):\n")
 cat(sprintf("%s: %.1f", names(gain), 100 * gain), sep = "\n")
 
-# panel A: Declining effectiveness of nets
+# panel B: Declining effectiveness of nets
 # mean and CI of "individual_net_impact" over time
 
 
 # split into past and future, both including the latest year of data so there is
 # no break in lines or ribbons
-panel_a_data_past <- panel_a_data %>%
+panel_b_data_past <- panel_b_data %>%
   filter(
     year <= latest_nets
   )
 
-panel_a_data_future <- panel_a_data %>%
+panel_b_data_future <- panel_b_data %>%
   filter(
     year >= latest_nets
   )
 
-panel_a <- ggplot(
+panel_b <- ggplot(
   mapping = aes(
     x = year,
     y = mean,
@@ -694,28 +694,28 @@ panel_a <- ggplot(
 ) +
   scale_y_continuous(
     labels = scales::percent,
-    limits = c(0, 1),
+    limits = c(0.5, 1),
     name = "LLIN effectiveness"
   ) +
   # past data
   geom_ribbon(
-    data = panel_a_data_past,
+    data = panel_b_data_past,
     fill = "#56B1F7"
   ) +
   geom_line(
-    data = panel_a_data_past,
+    data = panel_b_data_past,
     colour = grey(0.2),
     # linewidth = 0.8
   ) + 
   # future projections; 1/3 of the alpha and dashed lines
   geom_ribbon(
-    data = panel_a_data_future,
+    data = panel_b_data_future,
     fill = "#56B1F7",
     alpha = 0.5,
     linetype = 3
   ) +
   geom_line(
-    data = panel_a_data_future,
+    data = panel_b_data_future,
     colour = grey(0.2),
     alpha = 0.5,
     linetype = 3,
@@ -749,7 +749,7 @@ panel_a <- ggplot(
   theme_minimal()
 
 
-# B) Effective coverage by net type: stacked areas of dual-AI, PBO, then
+# A) Effective coverage by net type: stacked areas of dual-AI, PBO, then
 # pyrethroid-only nets, with the interval of the total, and the line of the
 # counterfactual without resistance above. The gap between the line and the
 # top of the stack is the coverage lost to resistance
@@ -766,7 +766,7 @@ net_type_cols <- c(pyrethroid = "#56B1F7",
                    dual_ai = dual_ai_col)
 
 # the bands of the stack, from the bottom
-panel_b_stack <- panel_b_data %>%
+panel_a_stack <- panel_a_data %>%
   select(year, dual_ai, pbo, pyrethroid) %>%
   pivot_longer(
     cols = -year,
@@ -787,32 +787,32 @@ panel_b_stack <- panel_b_data %>%
 
 # split into past and future, both including the latest year of data so there is
 # no break in lines or ribbons
-panel_b_data_past <- panel_b_data %>%
+panel_a_data_past <- panel_a_data %>%
   filter(
     year <= latest_nets
   )
 
-panel_b_data_future <- panel_b_data %>%
+panel_a_data_future <- panel_a_data %>%
   filter(
     year >= latest_nets
   )
 
-panel_b_stack_past <- panel_b_stack %>%
+panel_a_stack_past <- panel_a_stack %>%
   filter(
     year <= latest_nets
   )
 
-panel_b_stack_future <- panel_b_stack %>%
+panel_a_stack_future <- panel_a_stack %>%
   filter(
     year >= latest_nets
   )
 
-panel_b_final <- panel_b_data %>%
+panel_a_final <- panel_a_data %>%
   filter(
     year == max(year)
   )
 
-panel_b <- ggplot(
+panel_a <- ggplot(
   mapping = aes(
     x = year,
     y = mean,
@@ -839,7 +839,7 @@ panel_b <- ggplot(
   ) +
   # the stack, past then future; future at half the alpha
   geom_ribbon(
-    data = panel_b_stack_past,
+    data = panel_a_stack_past,
     aes(
       y = NULL,
       ymin = bottom,
@@ -848,7 +848,7 @@ panel_b <- ggplot(
     )
   ) +
   geom_ribbon(
-    data = panel_b_stack_future,
+    data = panel_a_stack_future,
     aes(
       y = NULL,
       ymin = bottom,
@@ -859,28 +859,28 @@ panel_b <- ggplot(
   ) +
   # the interval of the total
   geom_ribbon(
-    data = panel_b_data_past,
+    data = panel_a_data_past,
     fill = grey(0.2),
     alpha = 0.3
   ) +
   geom_ribbon(
-    data = panel_b_data_future,
+    data = panel_a_data_future,
     fill = grey(0.2),
     alpha = 0.15
   ) +
   geom_line(
-    data = panel_b_data_past,
+    data = panel_a_data_past,
     colour = grey(0.2)
   ) +
   geom_line(
-    data = panel_b_data_future,
+    data = panel_a_data_future,
     colour = grey(0.2),
     alpha = 0.5,
     linetype = 3
   ) +
   # dotted lines between the bands in the projection
   geom_line(
-    data = filter(panel_b_stack_future, type != "pyrethroid"),
+    data = filter(panel_a_stack_future, type != "pyrethroid"),
     aes(
       y = top,
       ymin = NULL,
@@ -893,14 +893,14 @@ panel_b <- ggplot(
   ) +
   # effective coverage with no IR, past then future
   geom_line(
-    data = panel_b_data_past,
+    data = panel_a_data_past,
     aes(
       y = mean_no_ir,
       colour = "No resistance"
     )
   ) +
   geom_line(
-    data = panel_b_data_future,
+    data = panel_a_data_future,
     aes(
       y = mean_no_ir,
       colour = "No resistance"
@@ -938,7 +938,7 @@ africa_bg <- geom_sf(data = borders,
 
 border_col <- grey(0.4)
 
-# the colours of panel B's pyrethroid-only and dual-AI nets for the classes
+# the colours of panel A's pyrethroid-only and dual-AI nets for the classes
 # where they are the better buy, and for the uncertain class a colour halfway
 # between them, lightened three quarters of the way to white. The break-even
 # susceptibilities and the cut are in the log, for the caption
@@ -995,25 +995,27 @@ better_buy_panel <- function(model) {
 
 panel_c <- better_buy_panel("symons")
 
-# A and B side by side in the top third, C square in the bottom two thirds
+# A and B side by side above, each 7:6, and C square below
 plots_all <- panel_a +
   panel_b +
   panel_c +
   plot_layout(
-    design = "AB\nCC\nCC"
+    design = "AB\nCC",
+    heights = c(3, 7)
   ) +
   plot_annotation(
     tag_levels = "A"
   )
 
+# drawn at three quarters of the size, so the text is larger
 ggsave(
   filename = "figures/epi_impact.png",
   plot = plots_all,
   bg = "white",
   width = 7,
-  height = 10.5,
-  scale = 1,
-  dpi = 300
+  height = 10,
+  scale = 0.75,
+  dpi = 400
 )
 
 # the supplement's version of panel C, under the effectiveness model of
@@ -1024,8 +1026,8 @@ ggsave(
   bg = "white",
   width = 7,
   height = 7,
-  scale = 1,
-  dpi = 300
+  scale = 0.75,
+  dpi = 400
 )
 
 
