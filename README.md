@@ -54,5 +54,6 @@ Running order of scripts:
 31. fig_ento_epi_impact.R: draws from the two-stage posterior (3 h
     and 21 GB in one process; preload OpenBLAS, as for
     `two_stage_maps.R`)
-32. fig_temporal_preds_data.R
-33. fig_temporal_preds_net_use.R
+32. fig_effectiveness_curves.R
+33. fig_temporal_preds_data.R
+34. fig_temporal_preds_net_use.R
