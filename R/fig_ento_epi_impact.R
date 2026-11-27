@@ -846,7 +846,7 @@ coverage_panel <- function(model) {
   ) +
     scale_y_continuous(
       labels = scales::percent,
-      limits = c(0, 0.6),
+      limits = c(0, 0.55),
       name = "Effective coverage"
     ) +
     scale_fill_manual(
@@ -880,10 +880,6 @@ coverage_panel <- function(model) {
         fill = type
       ),
       alpha = 0.5
-    ) +
-    geom_line(
-      data = panel_a_data_past,
-      colour = grey(0.2)
     ) +
     geom_line(
       data = panel_a_data_future,
@@ -1010,14 +1006,14 @@ better_buy_panel <- function(model) {
 }
 
 # the figure under an effectiveness model: A and B side by side above, each
-# 7:6, and C below, 7:6 across the figure
+# 3.5 by 2.7, and C below, 7 by 7
 epi_impact_figure <- function(model) {
   coverage_panel(model) +
     effectiveness_panel(model) +
     better_buy_panel(model) +
     plot_layout(
       design = "AB\nCC",
-      heights = c(3, 6)
+      heights = c(2.7, 7)
     ) +
     plot_annotation(
       tag_levels = "A"
@@ -1030,7 +1026,7 @@ ggsave(
   plot = epi_impact_figure("symons"),
   bg = "white",
   width = 7,
-  height = 9,
+  height = 9.7,
   scale = 0.75,
   dpi = 400
 )
@@ -1042,7 +1038,7 @@ ggsave(
   plot = epi_impact_figure("churcher"),
   bg = "white",
   width = 7,
-  height = 9,
+  height = 9.7,
   scale = 0.75,
   dpi = 400
 )
