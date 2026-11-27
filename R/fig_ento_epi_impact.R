@@ -885,19 +885,20 @@ africa_bg <- geom_sf(data = borders,
 border_col <- grey(0.4)
 
 # the colours of panel B's pyrethroid-only and dual-AI nets for the classes
-# where they are the better buy
-band_cols <- c(pyrethroid = "#56B1F7",
-               uncertain = "#CC79A7",
-               next_generation = "#009E73")
-band_labels <- c(
-  pyrethroid = sprintf("Pyrethroid-only\n(> %.0f%%)",
-                       100 * break_even_susceptibility[["high"]]),
-  uncertain = sprintf("Uncertain\n(%.0f-%.0f%%)",
-                      100 * break_even_susceptibility[["low"]],
-                      100 * break_even_susceptibility[["high"]]),
-  next_generation = sprintf("Next-generation\n(< %.0f%%)",
-                            100 * break_even_susceptibility[["low"]])
-)
+# where they are the most cost-effective, and for the uncertain class a colour
+# halfway between them, lightened halfway to white. The thresholds are in the
+# log, for the caption
+pyrethroid_col <- "#56B1F7"
+next_generation_col <- "#009E73"
+uncertain_col <- colorRampPalette(
+  c(colorRampPalette(c(pyrethroid_col, next_generation_col))(3)[2], "white")
+)(3)[2]
+band_cols <- c(pyrethroid = pyrethroid_col,
+               uncertain = uncertain_col,
+               next_generation = next_generation_col)
+band_labels <- c(pyrethroid = "Pyrethroid-only",
+                 uncertain = "Uncertain",
+                 next_generation = "Next-generation")
 
 panel_c <- ggplot() +
   africa_bg +
@@ -915,7 +916,7 @@ panel_c <- ggplot() +
     na.translate = FALSE,
     # note we arre using element_markdown() for legend titles so need this html
     # linebreak version
-    name = "Better buy, by<br>susceptibility<br>(2025)",
+    name = "Most cost-effective<br>(2025)",
     na.value = "transparent"
   ) +
   # no padding around Africa, so it fills the panel
