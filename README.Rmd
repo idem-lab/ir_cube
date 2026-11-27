@@ -27,7 +27,7 @@ Running order of scripts:
 1. prep_country_borders.R
 1. prep_bioassays.R
 1. prep_rasters.R
-1. prep_net_use_pyrethroid.R
+1. prep_net_use_pyrethroid.R: also net use of PBO and dual-AI nets
 1. calculate_ingredient_fractions.R
 1. fit_model_glm.R
 1. fit_model.R
@@ -53,6 +53,8 @@ Running order of scripts:
 1. fig_ir_maps.R
 1. fig_ir_map_2025.R
 1. fig_ir_map_2000_2030.R
-1. fig_ento_epi_impact.R
+1. fig_ento_epi_impact.R: draws from the two-stage posterior (3 h and
+   21 GB in one process; preload OpenBLAS, as for `two_stage_maps.R`)
+1. fig_effectiveness_curves.R
 1. fig_temporal_preds_data.R
 1. fig_temporal_preds_net_use.R
