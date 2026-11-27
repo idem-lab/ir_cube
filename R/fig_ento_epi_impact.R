@@ -175,8 +175,9 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 # and for each cell, its population at risk in 2025 and the posterior mean,
 # quantiles (probs) and probabilities of being above the highest k* and below
 # the lowest of its 2025 susceptibility (panel C). The cells are processed in
-# forked workers (IR_CUBE_MAP_WORKERS), in chunks of chunk_size cells, each
-# holding all the draws of its cells; the results do not depend on either
+# forked workers (IR_CUBE_MAP_WORKERS; see below), in chunks of chunk_size
+# cells, each holding all the draws of its cells; the results do not depend
+# on either
 compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
                               break_even, confidence, probs,
                               chunk_size = 2500) {
@@ -220,14 +221,18 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
   weight_b <- sweep(people, 2, colSums(people), "/") * at_cells(nets)
   people_2025 <- people[, "2025"]
   map_2025 <- at_cells(ir[["2025"]])[, 1]
-  rm(people)
+  rm(people, population_at_risk, nets, selected, ir, pop_all, pr2000)
 
   # the draws of each pyrethroid (the map's: same draws, batches and seeds)
   data <- modelled_bioassays(baseline_year)$df
   setups <- lapply(names(llin_weights), function(type) {
-    two_stage_setup(type, years = years_all, data = data, n_draws = 1000,
-                    batch_size = 100, baseline_year = baseline_year)
+    setup <- two_stage_setup(type, years = years_all, data = data,
+                             n_draws = 1000, batch_size = 100,
+                             baseline_year = baseline_year)
+    message(format(Sys.time(), "%H:%M:%S"), " set up ", type)
+    setup
   })
+  rm(data)
   stopifnot(length(unique(lapply(setups, `[[`, "design"))) == 1,
             length(unique(lapply(setups, `[[`, "batches"))) == 1)
   n_draws <- setups[[1]]$n_draws
@@ -297,7 +302,7 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
       stats[[i]] <- cbind(cell = cells[rows], people_2025 = people_2025[rows],
                           classified$stats)
       rm(k, chunk)
-      if (i %% 10 == 0) {
+      if (i %% 5 == 0) {
         message(format(Sys.time(), "%H:%M:%S"), " cells ", min(group), "-",
                 max(group), ": ", i, " of ", length(chunks), " chunks")
       }
@@ -306,7 +311,14 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
     sums
   }
 
+  # Forked workers deadlocked on the Linux box (each waiting on a lock held
+  # at the fork), so this ran in one process (IR_CUBE_MAP_WORKERS = 1): 3 h
+  # with OpenBLAS (8 threads), 21 GB at peak. At 4 workers, memory also ran
+  # short: each added a few GB to the parent's ~11 GB
+  invisible(gc())
   n_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
+  message(format(Sys.time(), "%H:%M:%S"), " drawing ", length(cells),
+          " cells in ", n_workers, " workers")
   groups <- split(seq_along(cells),
                   ceiling(seq_along(cells) /
                             ceiling(length(cells) / n_workers)))
@@ -538,8 +550,8 @@ epi <- cached_figure_data(
              "data/clean/pop_cube_future.tif")
 )
 
-# the posterior of susceptibility, as the panels weight it (hours, with
-# IR_CUBE_MAP_WORKERS forked workers; see compute_epi_draws())
+# the posterior of susceptibility, as the panels weight it (3 h in one
+# process; see compute_epi_draws())
 llin_weights <- unlist(readRDS("temporary/ingredient_weights.RDS"))
 draws <- cached_figure_data(
   "temporary/fig_ento_epi_impact_draws.rds", compute_epi_draws,
