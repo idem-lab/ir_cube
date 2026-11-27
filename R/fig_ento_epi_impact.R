@@ -27,8 +27,8 @@
 # map, by whether pyrethroid-only or dual-AI nets give more effective coverage
 # for the same budget (break_even_effectiveness()), with the delivery cost per
 # net from two mass campaigns in Mali (Scates et al. 2020), under two models of
-# effectiveness (Symons et al. and Sherrard-Smith et al. 2022); uncertain
-# where the models and delivery costs disagree
+# effectiveness (Symons et al. and Churcher et al. 2024); uncertain where the
+# models and delivery costs disagree
 
 # D) Effectiveness over time within each class, as A
 
@@ -443,37 +443,58 @@ break_even <- break_even_effectiveness(
   price_dual_ai = cost_value("net_price", "dual_ai")
 )
 
-# The probability dN0 that a new pyrethroid-only net kills a mosquito on a
-# feeding attempt, by pyrethroid resistance (bioassay survival, 1 - k), from
-# Sherrard-Smith et al. 2022 (https://doi.org/10.1038/s41467-022-30700-1),
-# Supplementary Data 1, sheet S1.4: medians of their main model, set 4
-# (log-logistic link from bioassay to hut trial mortality, all hut data)
-sherrard_smith_killing <- read_excel(
-  "data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
-  sheet = "S1.4 Efficacy parameters ITNs",
-  range = "A15:O117"
-) %>%
-  select(resistance = 1, dN0_4) %>%
-  filter(!is.na(resistance)) %>%
-  mutate(susceptibility = 1 - resistance)
-stopifnot(nrow(sherrard_smith_killing) == 101)
+# The relative effectiveness of pyrethroid-only nets in the simulations of
+# the MINT transmission model behind Churcher et al. 2024 (Lancet Global
+# Health 12:e1973-e1983; MINT-data-v20230208,
+# https://doi.org/10.5281/zenodo.8344312): a mass distribution of
+# pyrethroid-only nets ("llin") at 60% use against none, with no nets or IRS
+# before, in each of 56 settings (prevalence in children under 5 of 5-60%,
+# human and indoor biting high or low, seasonal or perennial), at bioassay
+# survival 0, 20, ..., 100%. The nets' effect is the difference in the
+# log-odds of prevalence in children under 5 between none and nets, averaged
+# over the three years after distribution, as Symons et al. measure it,
+# relative to that in the same setting at k = 1; the median over the settings
+mint_dir <- "data/raw/mint_zenodo_8344312"
+mint_index <- readRDS(file.path(mint_dir, "index.rds")) %>%
+  filter(itnUsage == "0%", sprayInput == "0%")
+stopifnot(nrow(mint_index) == 56 * 6)
+mint_files <- paste0("table/", mint_index$index, ".rds")
+unzip(file.path(mint_dir, "table.zip"), files = mint_files,
+      exdir = tempdir())
+mint_prevalence <- function(table) {
+  c(table$prevYear1, table$prevYear2, table$prevYear3)
+}
+mint_effectiveness <- mint_index %>%
+  mutate(
+    susceptibility = 1 - parse_number(levelOfResistance) / 100,
+    effect = map_dbl(file.path(tempdir(), mint_files), function(file) {
+      table <- readRDS(file)
+      none <- filter(table, intervention == "none")
+      nets <- filter(table, intervention == "llin", near(netUse, 0.6))
+      stopifnot(nrow(none) == 1, nrow(nets) == 1)
+      mean(qlogis(mint_prevalence(none)) - qlogis(mint_prevalence(nets)))
+    })
+  ) %>%
+  group_by(currentPrevalence, bitingPeople, bitingIndoors,
+           seasonalityOfTransmission) %>%
+  mutate(effectiveness = effect / effect[susceptibility == 1]) %>%
+  group_by(susceptibility) %>%
+  summarise(effectiveness = median(effectiveness))
 
 # Two models of the relative effectiveness e(k) of a pyrethroid-only net, as a
-# function of susceptibility k (bioassay mortality), 1 at k = 1:
-#   symons          Symons et al., at the posterior mean of their coefficients
-#                   (epi_function_mean() in compute_epi_impact())
-#   sherrard_smith  Sherrard-Smith et al.'s killing dN0, relative to that at
-#                   k = 1, interpolated linearly. It ignores the net's
-#                   repellence and physical barrier (it is 0 at k = 0), and
-#                   the faster loss of insecticide under resistance
+# function of susceptibility k (bioassay mortality), 1 at k = 1, both the
+# nets' effect on the log-odds of prevalence:
+#   symons    Symons et al., at the posterior mean of their coefficients
+#             (epi_function_mean() in compute_epi_impact())
+#   churcher  Churcher et al. 2024's MINT simulations, above, interpolated
+#             linearly between the simulated k
 effectiveness_models <- list(
   symons = function(k) {
     1 - 0.46 * (1 - k)
   },
-  sherrard_smith = approxfun(
-    x = sherrard_smith_killing$susceptibility,
-    y = sherrard_smith_killing$dN0_4 /
-      sherrard_smith_killing$dN0_4[sherrard_smith_killing$susceptibility == 1]
+  churcher = approxfun(
+    x = mint_effectiveness$susceptibility,
+    y = mint_effectiveness$effectiveness
   )
 )
 
@@ -612,9 +633,8 @@ band_summary <- epi$people_by_susceptibility %>%
     share = sum(people),
     symons = weighted.mean(effectiveness_models$symons(susceptibility),
                            people),
-    sherrard_smith = weighted.mean(
-      effectiveness_models$sherrard_smith(susceptibility), people
-    )
+    churcher = weighted.mean(effectiveness_models$churcher(susceptibility),
+                             people)
   ) %>%
   mutate(share = share / sum(share))
 
@@ -622,9 +642,9 @@ cat("\nClasses of 2025 susceptibility (share: % of the population at risk in",
     "2025; effectiveness: its mean over them under each model, %):\n")
 band_summary %>%
   mutate(text = sprintf(paste("%s: share %.1f, effectiveness %.1f (Symons),",
-                              "%.1f (Sherrard-Smith)"),
+                              "%.1f (Churcher)"),
                         band, 100 * share, 100 * symons,
-                        100 * sherrard_smith)) %>%
+                        100 * churcher)) %>%
   pull(text) %>%
   cat(sep = "\n")
 
@@ -837,6 +857,19 @@ panel_b <- ggplot(
   ) +
   geom_line(
     data = panel_b_data_future,
+    colour = grey(0.2),
+    alpha = 0.5,
+    linetype = 3
+  ) +
+  # dotted lines between the bands in the projection
+  geom_line(
+    data = filter(panel_b_stack_future, type != "pyrethroid"),
+    aes(
+      y = top,
+      ymin = NULL,
+      ymax = NULL,
+      group = type
+    ),
     colour = grey(0.2),
     alpha = 0.5,
     linetype = 3
