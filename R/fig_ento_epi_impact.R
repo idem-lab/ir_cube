@@ -720,9 +720,13 @@ panel_a <- ggplot(
 net_type_labels <- c(pyrethroid = "Pyrethroid-only",
                      pbo = "PBO",
                      dual_ai = "Dual-AI")
+# pyrethroid-only nets blue, dual-AI nets maroon, and PBO nets, a less good
+# next-generation net, the maroon greyed. None is close to the insecticide
+# colours of the other figures (insecticide_colours(), R/functions.R)
+dual_ai_col <- "#AE017E"
 net_type_cols <- c(pyrethroid = "#56B1F7",
-                   pbo = "#E69F00",
-                   dual_ai = "#009E73")
+                   pbo = colorRampPalette(c(dual_ai_col, grey(0.8)))(101)[66],
+                   dual_ai = dual_ai_col)
 
 # the bands of the stack, from the bottom
 panel_b_stack <- panel_b_data %>%
@@ -888,8 +892,8 @@ border_col <- grey(0.4)
 # where they are the most cost-effective, and for the uncertain class a colour
 # halfway between them, lightened halfway to white. The thresholds are in the
 # log, for the caption
-pyrethroid_col <- "#56B1F7"
-next_generation_col <- "#009E73"
+pyrethroid_col <- net_type_cols[["pyrethroid"]]
+next_generation_col <- net_type_cols[["dual_ai"]]
 uncertain_col <- colorRampPalette(
   c(colorRampPalette(c(pyrethroid_col, next_generation_col))(3)[2], "white")
 )(3)[2]
