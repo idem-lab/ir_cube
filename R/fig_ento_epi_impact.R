@@ -827,6 +827,9 @@ coverage_panel <- function(model) {
       ymax = upper
     )
   ) +
+    scale_x_continuous(
+      breaks = c(2000, 2010, 2020)
+    ) +
     scale_y_continuous(
       labels = scales::percent,
       limits = c(0, 0.55),
