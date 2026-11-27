@@ -22,11 +22,13 @@
 # resistance, all nets in use fully effective; the gap between them is the
 # coverage lost to resistance
 
-# C) Spatial variation in effectiveness: the posterior probability that
-# pyrethroid-only nets give more effective coverage than dual-AI nets for the
-# same budget in 2025 (break_even_effectiveness()), at the mean delivery cost
-# per net of two mass campaigns in Mali (Scates et al. 2020). The supplement's
-# version uses the effectiveness model of Churcher et al. 2024 instead
+# C) Spatial variation in effectiveness: where pyrethroid-only or dual-AI nets
+# give more effective coverage for the same budget in 2025
+# (break_even_effectiveness()), at the mean delivery cost per net of two mass
+# campaigns in Mali (Scates et al. 2020): pyrethroid-only nets where the
+# posterior probability that they do is at least 0.9, dual-AI nets where it is
+# at most 0.1, uncertain between. The supplement's version uses the
+# effectiveness model of Churcher et al. 2024 instead
 
 # After the last year of net use data (2025), use and the mix of net types are
 # held at that year's values. The ribbons are credible intervals of the
@@ -550,14 +552,23 @@ panel_b_data <- epi$coverage %>%
   ) %>%
   bind_cols(select(posterior_summary(coverage_total), lower, upper))
 
-# panel C: the posterior probability that pyrethroid-only nets are the better
-# buy in 2025 (susceptibility above the model's k*), within the limits of
-# transmission; Symons et al.'s for panel C, Churcher et al.'s for the
+# panel C: the classes of 2025 susceptibility by the posterior probability p
+# that pyrethroid-only nets are the better buy (susceptibility above the
+# model's k*): pyrethroid-only where p is at least `confidence`, dual-AI where
+# it is at most 1 - confidence, uncertain between; within the limits of
+# transmission. Symons et al.'s for panel C, Churcher et al.'s for the
 # supplement
+confidence <- 0.9
+class_names <- c("pyrethroid", "uncertain", "dual_ai")
+better_buy_class <- function(model) {
+  p <- draws$cells[[paste0("above_", model)]]
+  if_else(p >= confidence, 1, if_else(p <= 1 - confidence, 3, 2))
+}
 better_buy_map <- function(model) {
-  probability <- rast(rast("data/clean/raster_mask.tif"))
-  probability[draws$cells$cell] <- draws$cells[[paste0("above_", model)]]
-  terra::mask(probability, rast("data/clean/pfpr_water_mask.tif"))
+  classes <- rast(rast("data/clean/raster_mask.tif"))
+  classes[draws$cells$cell] <- better_buy_class(model)
+  levels(classes) <- data.frame(id = 1:3, band = class_names)
+  terra::mask(classes, rast("data/clean/pfpr_water_mask.tif"))
 }
 
 
@@ -619,37 +630,34 @@ cat("\nBreak-even susceptibility k* (bioassay mortality, %), where e(k*) =",
 cat(sprintf("%s: %.1f", names(break_even_susceptibility),
             100 * break_even_susceptibility), sep = "\n")
 
-# the shares of the population at risk in 2025 by the posterior probability
-# that pyrethroid-only nets are the better buy, under each model
-probability_bins <- c(0, 0.05, 0.2, 0.5, 0.8, 0.95, 1)
-better_buy_shares <- draws$cells %>%
-  select(people_2025, starts_with("above_")) %>%
-  pivot_longer(starts_with("above_"), names_to = "model",
-               names_prefix = "above_", values_to = "probability") %>%
-  mutate(bin = cut(probability, probability_bins, right = FALSE,
-                   include.lowest = TRUE)) %>%
-  group_by(model, bin) %>%
-  summarise(people = sum(people_2025), .groups = "drop_last") %>%
+# the classes' shares of the population at risk in 2025, under each model
+class_shares <- map_dfr(names(effectiveness_models), function(model) {
+  tibble(model = model,
+         class = factor(class_names[better_buy_class(model)],
+                        levels = class_names),
+         people = draws$cells$people_2025)
+}) %>%
+  group_by(model, class) %>%
+  summarise(people = sum(people), .groups = "drop_last") %>%
   mutate(share = people / sum(people)) %>%
   ungroup()
 
-cat("\nPopulation at risk in 2025 by the posterior probability that",
-    "pyrethroid-only nets are the better buy (share: % of the population at",
-    "risk in 2025):\n")
-better_buy_shares %>%
-  mutate(text = sprintf("%s, probability %s: share %.1f", model, bin,
-                        100 * share)) %>%
+cat(sprintf(paste0("\nClasses of panel C, at posterior probability %.2f",
+                   " (share: %% of the population at risk in 2025):\n"),
+            confidence))
+class_shares %>%
+  mutate(text = sprintf("%s, %s: share %.1f", model, class, 100 * share)) %>%
   pull(text) %>%
   cat(sep = "\n")
 
 # the gain in effective coverage from buying pyrethroid-only instead of dual-AI
-# nets with the same budget, where pyrethroid-only nets are more likely than
-# not the better buy (probability above 0.5): (P_dual + D) / (P_pyr + D) e - 1
+# nets with the same budget, where pyrethroid-only nets are the better buy
+# (their class in panel C): (P_dual + D) / (P_pyr + D) e - 1
 # = e / e*(D) - 1, linear in e, so its mean over the population at risk is
 # that at their mean effectiveness, here at each cell's posterior mean
 # susceptibility
 gain <- vapply(names(effectiveness_models), function(model) {
-  better <- draws$cells[[paste0("above_", model)]] > 0.5
+  better <- better_buy_class(model) == 1
   effectiveness <- weighted.mean(
     effectiveness_models[[model]](draws$cells$mean[better]),
     draws$cells$people_2025[better]
@@ -657,7 +665,7 @@ gain <- vapply(names(effectiveness_models), function(model) {
   effectiveness / break_even - 1
 }, numeric(1))
 cat("\nGain in effective coverage from pyrethroid-only nets, where they are",
-    "more likely than not the better buy (% of that from dual-AI nets):\n")
+    "the better buy (% of that from dual-AI nets):\n")
 cat(sprintf("%s: %.1f", names(gain), 100 * gain), sep = "\n")
 
 # panel A: Declining effectiveness of nets
@@ -718,6 +726,24 @@ panel_a <- ggplot(
     xintercept = latest_nets,
     color = grey(0.6),
     linetype = 2
+  ) +
+  # the break-even effectiveness e*(D) at the mean delivery cost: above it,
+  # pyrethroid-only nets give more effective coverage than dual-AI nets for
+  # the same budget
+  geom_hline(
+    yintercept = break_even,
+    colour = grey(0.4),
+    linetype = 2
+  ) +
+  annotate(
+    "text",
+    x = min(years_plot),
+    y = break_even,
+    label = "Break-even",
+    hjust = 0,
+    vjust = 1.5,
+    size = 2.5,
+    colour = grey(0.4)
   ) +
   xlab("") +
   theme_minimal()
@@ -901,9 +927,8 @@ panel_b <- ggplot(
     fill = guide_legend(order = 2)
   )
 
-# C) Spatial variation in effectiveness: the posterior probability that
-# pyrethroid-only nets are the better buy (2025), on a map, from white (as
-# likely as not) to the colours of panel B's net types
+# C) Spatial variation in effectiveness: the classes of 2025 susceptibility by
+# the better buy, on a map
 
 
 # grey background for Africa
@@ -913,18 +938,20 @@ africa_bg <- geom_sf(data = borders,
 
 border_col <- grey(0.4)
 
-# panel B's dual-AI maroon at probability 0, and at 1 its pyrethroid-only
-# blue darkened to the maroon's lightness (CIELAB L* 39), so that both ends
-# are as strong. The ramp is stretched symmetrically about 0.5, the distance
-# from it raised to a power, so it stays near white across the middle. The
-# break-even susceptibilities are in the log, for the caption
-pyrethroid_dark_col <- "#0062A1"
-ramp_stretch <- 2
-probability_grid <- seq(0, 1, length.out = 101)
-better_buy_cols <- scales::colour_ramp(
-  c(net_type_cols[["dual_ai"]], "white", pyrethroid_dark_col)
-)(0.5 + sign(probability_grid - 0.5) *
-    abs(2 * probability_grid - 1)^ramp_stretch / 2)
+# the colours of panel B's pyrethroid-only and dual-AI nets for the classes
+# where they are the better buy, and for the uncertain class a colour halfway
+# between them, lightened three quarters of the way to white. The break-even
+# susceptibilities and the cut are in the log, for the caption
+pyrethroid_col <- net_type_cols[["pyrethroid"]]
+uncertain_col <- colorRampPalette(
+  c(colorRampPalette(c(pyrethroid_col, dual_ai_col))(3)[2], "white")
+)(5)[4]
+band_cols <- c(pyrethroid = pyrethroid_col,
+               uncertain = uncertain_col,
+               dual_ai = dual_ai_col)
+band_labels <- c(pyrethroid = "Pyrethroid-only",
+                 uncertain = "Uncertain",
+                 dual_ai = "Dual-AI")
 
 better_buy_panel <- function(model) {
   ggplot() +
@@ -936,15 +963,14 @@ better_buy_panel <- function(model) {
             col = border_col,
             linewidth = 0.1,
             fill = "transparent") +
-    scale_fill_gradientn(
-      colours = better_buy_cols,
-      values = probability_grid,
-      limits = c(0, 1),
-      breaks = c(0, 1),
-      labels = c("Dual-AI", "Pyrethroid-only"),
+    scale_fill_manual(
+      values = band_cols,
+      labels = band_labels,
+      breaks = names(band_cols),
+      na.translate = FALSE,
       # note we arre using element_markdown() for legend titles so need this
       # html linebreak version
-      name = "Most likely<br>cost-effective<br>(2025)",
+      name = "Most cost-effective<br>(2025)",
       na.value = "transparent"
     ) +
     # no padding around Africa, so it fills the panel
@@ -952,11 +978,12 @@ better_buy_panel <- function(model) {
     theme_ir_maps() +
     theme(
       plot.margin = unit(rep(0, 4), "cm"),
-      # to the left of the map, in the space its aspect ratio leaves
-      legend.position = "left",
-      # a colourbar is five keys long
-      legend.key.height = unit(0.4, "cm"),
-      legend.key.width = unit(0.3, "cm"),
+      # in the Atlantic, at the bottom left
+      legend.position = "inside",
+      legend.position.inside = c(0.05, 0.15),
+      legend.justification.inside = c(0, 0),
+      legend.key.height = rel(0.8),
+      legend.key.width = rel(0.8),
       legend.text.position = "left",
       legend.text = element_text(size = rel(0.7),
                                  hjust = 1),
@@ -968,12 +995,12 @@ better_buy_panel <- function(model) {
 
 panel_c <- better_buy_panel("symons")
 
+# A and B side by side in the top third, C square in the bottom two thirds
 plots_all <- panel_a +
   panel_b +
   panel_c +
   plot_layout(
-    ncol = 3,
-    widths = rep(1, 3)
+    design = "AB\nCC\nCC"
   ) +
   plot_annotation(
     tag_levels = "A"
@@ -983,20 +1010,20 @@ ggsave(
   filename = "figures/epi_impact.png",
   plot = plots_all,
   bg = "white",
-  width = 10.5,
-  height = 3,
+  width = 7,
+  height = 10.5,
   scale = 1,
   dpi = 300
 )
 
 # the supplement's version of panel C, under the effectiveness model of
-# Churcher et al. 2024
+# Churcher et al. 2024, at the size of panel C
 ggsave(
   filename = "figures/epi_impact_churcher.png",
   plot = better_buy_panel("churcher"),
   bg = "white",
-  width = 4.5,
-  height = 4.5,
+  width = 7,
+  height = 7,
   scale = 1,
   dpi = 300
 )
