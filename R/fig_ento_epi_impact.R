@@ -6,15 +6,16 @@
 
 # three panel plot:
 
-# A) Effective coverage: net use times effectiveness, summed over three groups
-# of net types (R/prep_net_use_pyrethroid.R) and averaged across Africa over
-# the population at risk of each year (the year's population times PfPR in
+# A) Effective coverage, 2000-2025 (the years of net use data): net use times
+# effectiveness, summed over three groups of net types
+# (R/prep_net_use_pyrethroid.R) and averaged across Africa over the population
+# at risk of each year (the year's population times PfPR in
 # 2000), as stacked areas: dual-AI nets, PBO nets, then pyrethroid-only nets
 # (LLINs, and conventional ITNs counting as 0.25 of an LLIN). PBO and dual-AI
 # nets are assumed to be fully effective (effectiveness 1), losing none of it
-# to resistance. The line above the stack is the counterfactual without
-# resistance, all nets in use fully effective; the gap between them is the
-# coverage lost to resistance
+# to resistance. The dotted lines are the counterfactual without resistance,
+# all nets in use fully effective; the gap between the top line and the stack
+# is the coverage lost to resistance
 
 # B) Declining effectiveness of nets: timeseries with ribbon of uncertainty
 # giving the effectiveness, relative to a fully susceptible population, that a
@@ -30,8 +31,9 @@
 # at most 0.1, uncertain between. The supplement's version uses the
 # effectiveness model of Churcher et al. 2024 instead
 
-# After the last year of net use data (2025), use and the mix of net types are
-# held at that year's values. The ribbons are credible intervals of the
+# B is projected to 2030 from the two-stage model's forecasts
+# (compute_epi_impact() also holds net use at its 2025 values after 2025,
+# unplotted). The ribbons are credible intervals of the
 # two-stage posterior (compute_epi_draws()), with Symons et al.'s coefficients
 # at their posterior means. The numbers for the text are printed after the
 # panels' data.
@@ -762,7 +764,7 @@ effectiveness_panel <- function(model) {
                 "Dual-AI\nmore cost-effective"),
       hjust = c(1, 0),
       vjust = c(1, 0),
-      size = 2.2,
+      size = 3,
       lineheight = 0.9,
       colour = grey(0.4)
     ) +
@@ -791,7 +793,11 @@ net_type_cols <- c(pyrethroid = "#56B1F7",
 
 # panel A, under an effectiveness model
 coverage_panel <- function(model) {
-  panel_a_data <- panel_data[[model]]$a
+  # the years of net use data only
+  panel_a_data <- panel_data[[model]]$a %>%
+    filter(
+      year <= latest_nets
+    )
 
   # the bands of the stack, from the bottom
   panel_a_stack <- panel_a_data %>%
@@ -813,16 +819,6 @@ coverage_panel <- function(model) {
     ) %>%
     ungroup()
 
-  panel_a_stack_past <- panel_a_stack %>%
-    filter(
-      year <= latest_nets
-    )
-
-  panel_a_stack_future <- panel_a_stack %>%
-    filter(
-      year >= latest_nets
-    )
-
   panel_a <- ggplot(
     mapping = aes(
       x = year,
@@ -842,31 +838,15 @@ coverage_panel <- function(model) {
       breaks = c("pyrethroid", "pbo", "dual_ai"),
       name = NULL
     ) +
-    # vertical dividing line for past and future, light grey and solid,
-    # unlike the break-even line
-    geom_vline(
-      xintercept = latest_nets,
-      colour = grey(0.85)
-    ) +
-    # the stack, past then future; future at half the alpha
+    # the stack
     geom_ribbon(
-      data = panel_a_stack_past,
+      data = panel_a_stack,
       aes(
         y = NULL,
         ymin = bottom,
         ymax = top,
         fill = type
       )
-    ) +
-    geom_ribbon(
-      data = panel_a_stack_future,
-      aes(
-        y = NULL,
-        ymin = bottom,
-        ymax = top,
-        fill = type
-      ),
-      alpha = 0.5
     ) +
     # the counterfactual without resistance, dotted: the tops of the dual-AI
     # and PBO bands (where those nets are in use), which resistance leaves
