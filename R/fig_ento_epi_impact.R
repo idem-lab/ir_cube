@@ -900,13 +900,15 @@ coverage_panel <- function(model) {
       alpha = 0.5,
       linetype = 3
     ) +
-    # effective coverage with no IR, past then future
+    # effective coverage with no IR, past then future: dotted throughout, as
+    # a counterfactual
     geom_line(
       data = panel_a_data_past,
       aes(
         y = mean_no_ir,
         colour = "No resistance"
-      )
+      ),
+      linetype = 3
     ) +
     geom_line(
       data = panel_a_data_future,
