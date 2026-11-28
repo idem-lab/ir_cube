@@ -156,22 +156,29 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 # cell and year, draw for draw, the weighted sum of the pyrethroids' draws
 # sorted (comonotone), put in the order of the weighted sum of their draws as
 # drawn, so that each draw keeps that sum's pattern across cells and years.
-# Sorting keeps each cell's posterior mean. For each effectiveness model e(k)
-# (effectiveness: the points of a piecewise linear curve), draw and year:
-#   effectiveness  the mean of e(k) over the population at risk in 2000
-#                  (panel B)
-#   coverage       the effective coverage of the pyrethroid-only nets: the
-#                  sum of e(k) times their use and the year's population at
-#                  risk weights (panel A); use_weight the sum of the weights
-# and for each cell, its population at risk in 2025, and the posterior mean
-# of its 2025 susceptibility and its sorted draws at the ranks that classify
+# Sorting keeps each cell's posterior mean.
+#
+# Any effectiveness curve e(k) that is linear between the knots k = 0, 0.01,
+# ..., 1 is a weighted sum of the hat functions at the knots, with weights
+# e(knot), so its sums over cells are those of the hat functions, weighted by
+# e(knot) (curve_draws()). For each draw and year, the sums over cells of the
+# hat functions of k, weighted:
+#   basis_2000  by the population at risk in 2000, for the mean effectiveness
+#               (panel B)
+#   basis_use   by pyrethroid-only net use times the year's population at
+#               risk weights, for their effective coverage (panel A);
+#               use_weight the sum of these weights
+# and for each cell, its population at risk in 2025, and from its 2025
+# susceptibility: the posterior mean; the sorted draws at the ranks that class
 # it at posterior probability 0.9, 0.95 or 0.975 against any break-even
-# susceptibility k* (panel C; better_buy_class()), so that a change in k*
-# needs no rerun. The cells are processed in forked workers (IR_CUBE_MAP_WORKERS;
-# see below), in chunks of chunk_size cells, each holding all the draws of its
-# cells; the results do not depend on either
+# susceptibility k* (panel C; better_buy_class()); and the posterior means of
+# the hat functions at k = 0, 0.2, ..., 1, the points of MINT's curves, for
+# the mean of any curve linear between them. So a change in the effectiveness
+# curve or in k* needs no rerun. The cells are processed in forked workers
+# (IR_CUBE_MAP_WORKERS; see below), in chunks of chunk_size cells, each
+# holding all the draws of its cells; the results do not depend on either
 compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
-                              effectiveness, chunk_size = 1250) {
+                              chunk_size = 1250) {
   terraOptions(todisk = TRUE)
   baseline_year <- 1995
   years_all <- baseline_year:max(years_plot)
@@ -244,9 +251,42 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
   ranks <- round(c(n_draws * (1 - confidence_levels) + 1,
                    n_draws * confidence_levels))
   cell_summary <- function(sorted_2025) {
-    out <- cbind(colMeans(sorted_2025), t(sorted_2025[ranks, , drop = FALSE]))
-    colnames(out) <- c("mean", paste0("x", ranks))
+    out <- cbind(colMeans(sorted_2025), t(sorted_2025[ranks, , drop = FALSE]),
+                 cell_basis(sorted_2025))
+    colnames(out) <- c("mean", paste0("x", ranks),
+                       paste0("basis_", seq(0, 100, by = 20)))
     out
+  }
+
+  # each k (draws x cells) split between its two neighbouring knots, in
+  # proportion to its closeness: the knot below (0 to n_knots - 2) and the
+  # share of the knot above
+  n_knots <- 101
+  split_knots <- function(k, n_knots) {
+    position <- k * (n_knots - 1)
+    lower <- pmin(floor(position), n_knots - 2)
+    list(lower = lower, upper_share = position - lower)
+  }
+  # the sums over cells of the hat functions at the knots, draws x knots x
+  # columns of weights (cells x 2)
+  basis_sums <- function(k, weights) {
+    knots <- split_knots(k, n_knots)
+    group <- as.integer(c(row(k) + n_draws * knots$lower,
+                          row(k) + n_draws * (knots$lower + 1)))
+    sums <- rowsum(c(1 - knots$upper_share, knots$upper_share) *
+                     weights[c(col(k), col(k)), , drop = FALSE],
+                   group, reorder = FALSE)
+    out <- matrix(0, n_draws * n_knots, ncol(weights))
+    out[as.integer(rownames(sums)), ] <- sums
+    array(out, c(n_draws, n_knots, ncol(weights)))
+  }
+  # the posterior means of the hat functions at k = 0, 0.2, ..., 1 (cells x 6)
+  cell_basis <- function(k) {
+    knots <- split_knots(k, 6)
+    sapply(0:5, function(knot) {
+      colMeans((knots$lower == knot) * (1 - knots$upper_share) +
+                 (knots$lower == knot - 1) * knots$upper_share)
+    })
   }
 
   # the sums of a group of cells (rows of the cells above): the draws of all
@@ -254,10 +294,8 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
   group_sums <- function(group) {
     group_cells <- two_stage_cells(setups[[1]], cells[group], country[group])
     chunks <- split(seq_along(group), ceiling(seq_along(group) / chunk_size))
-    empty <- lapply(effectiveness, function(points) {
-      matrix(0, n_draws, length(years_plot))
-    })
-    sums <- list(effectiveness = empty, coverage = empty)
+    empty <- array(0, c(n_draws, n_knots, length(years_plot)))
+    sums <- list(basis_2000 = empty, basis_use = empty)
     stats <- vector("list", length(chunks))
     for (i in seq_along(chunks)) {
       rows <- group[chunks[[i]]]
@@ -295,15 +333,10 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
       stopifnot(max(abs(colMeans(k[, , index_2025]) - map_2025[rows])) <
                   1e-5)
       for (j in seq_along(years_plot)) {
-        for (m in names(effectiveness)) {
-          e <- matrix(approx(effectiveness[[m]]$susceptibility,
-                             effectiveness[[m]]$effectiveness,
-                             xout = k[, , j])$y, n_draws)
-          sums$effectiveness[[m]][, j] <- sums$effectiveness[[m]][, j] +
-            e %*% weight_2000[rows]
-          sums$coverage[[m]][, j] <- sums$coverage[[m]][, j] +
-            e %*% weight_use[rows, j]
-        }
+        sums_j <- basis_sums(matrix(k[, , j], n_draws),
+                             cbind(weight_2000[rows], weight_use[rows, j]))
+        sums$basis_2000[, , j] <- sums$basis_2000[, , j] + sums_j[, , 1]
+        sums$basis_use[, , j] <- sums$basis_use[, , j] + sums_j[, , 2]
       }
       rm(k, chunk)
       if (i %% 5 == 0) {
@@ -334,15 +367,13 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
          paste(unique(unlist(done[failed])), collapse = "; "))
   }
   add <- function(name) {
-    lapply(setNames(nm = names(effectiveness)), function(m) {
-      total <- Reduce(`+`, lapply(done, function(sums) sums[[name]][[m]]))
-      `colnames<-`(total, years_plot)
-    })
+    Reduce(`+`, lapply(done, `[[`, name))
   }
   list(
     years = years_plot,
-    effectiveness = add("effectiveness"),
-    coverage = add("coverage"),
+    knots = seq(0, 1, length.out = n_knots),
+    basis_2000 = add("basis_2000"),
+    basis_use = add("basis_use"),
     use_weight = colSums(weight_use),
     n_draws = n_draws,
     cells = as_tibble(do.call(rbind, lapply(done, `[[`, "stats")))
@@ -372,14 +403,22 @@ llin_weights <- unlist(readRDS("temporary/ingredient_weights.RDS"))
 draws <- cached_figure_data(
   "temporary/fig_ento_epi_impact_draws.rds", compute_epi_draws,
   args = list(years_plot = years_plot, net_type_files = net_type_files,
-              llin_weights = llin_weights,
-              effectiveness = effectiveness_points),
+              llin_weights = llin_weights),
   sources = c("R/packages.R", "R/functions.R", "R/model_covariates.R",
               "R/bioassay_subset.R", "R/two_stage_predictions.R"),
   inputs = c(ir_map_files("llin_effective", years_plot), net_type_files,
              two_stage_figure_inputs(names(llin_weights)))
 )
 latest_nets <- epi$latest_nets
+
+# each draw's sum over cells of an effectiveness curve (points: linear between
+# them, as effectiveness_points) from the sums of the hat functions (basis,
+# draws x knots x years; compute_epi_draws()): draws x years
+curve_draws <- function(basis, points) {
+  e_knots <- approx(points$susceptibility, points$effectiveness,
+                    xout = draws$knots)$y
+  `colnames<-`(apply(basis, 3, function(sums) sums %*% e_knots), years_plot)
+}
 
 # the credible intervals of the ribbons
 interval <- 0.95
@@ -401,7 +440,8 @@ posterior_summary <- function(x) {
 stopifnot(isTRUE(all.equal(draws$use_weight, epi$coverage$pyrethroid_use,
                            check.attributes = FALSE, tolerance = 1e-6)))
 panel_data <- lapply(setNames(nm = names(effectiveness_models)), function(model) {
-  coverage_pyrethroid <- draws$coverage[[model]]
+  coverage_pyrethroid <- curve_draws(draws$basis_use,
+                                     effectiveness_points[[model]])
   coverage_total <- sweep(coverage_pyrethroid, 2,
                           epi$coverage$pbo + epi$coverage$dual_ai, "+")
   list(
@@ -411,7 +451,8 @@ panel_data <- lapply(setNames(nm = names(effectiveness_models)), function(model)
         mean = pyrethroid + pbo + dual_ai
       ) %>%
       bind_cols(select(posterior_summary(coverage_total), lower, upper)),
-    b = posterior_summary(draws$effectiveness[[model]])
+    b = posterior_summary(curve_draws(draws$basis_2000,
+                                      effectiveness_points[[model]]))
   )
 })
 
@@ -527,14 +568,15 @@ class_shares %>%
 # nets with the same budget, where pyrethroid-only nets are the better buy
 # (their class in panel C): (P_dual + D) / (P_pyr + D) e - 1
 # = e / e*(D) - 1, linear in e, so its mean over the population at risk is
-# that at their mean effectiveness, here at each cell's posterior mean
-# susceptibility
+# that at their mean effectiveness: each cell's posterior mean of e(k), from
+# the posterior means of its hat functions at k = 0, 0.2, ..., 1 (exact for
+# the curves, all linear between those points)
+cell_basis <- as.matrix(select(draws$cells, starts_with("basis_")))
 gain <- vapply(names(effectiveness_models), function(model) {
   better <- better_buy_class(model) == 1 & in_limits
-  effectiveness <- weighted.mean(
-    effectiveness_models[[model]](draws$cells$mean[better]),
-    draws$cells$people_2025[better]
-  )
+  e_points <- effectiveness_models[[model]](seq(0, 1, by = 0.2))
+  effectiveness <- weighted.mean((cell_basis %*% e_points)[better],
+                                 draws$cells$people_2025[better])
   effectiveness / break_even - 1
 }, numeric(1))
 cat("\nGain in effective coverage from pyrethroid-only nets, where they are",

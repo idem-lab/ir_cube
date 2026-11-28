@@ -66,9 +66,10 @@ break_even <- break_even_effectiveness(
 # human and indoor biting high or low, seasonal or perennial), at bioassay
 # survival 0, 20, ..., 100%. The nets' effect is the difference in the
 # log-odds of prevalence in children under 5 between none and nets, averaged
-# over the three years after distribution, as Symons et al. measure it,
-# relative to that in the same setting at k = 1 (mint_settings); the median
-# over the settings (mint_effectiveness)
+# over the three years after distribution, as Symons et al. measure it, or
+# in clinical cases (mean cases per person per year, over the same years);
+# each relative to that in the same setting at k = 1 (mint_settings), and the
+# median over the settings (mint_effectiveness, mint_effectiveness_cases)
 mint_dir <- "data/raw/mint_zenodo_8344312"
 mint_index <- readRDS(file.path(mint_dir, "index.rds")) %>%
   filter(itnUsage == "0%", sprayInput == "0%")
@@ -82,22 +83,30 @@ mint_prevalence <- function(table) {
 mint_settings <- mint_index %>%
   mutate(
     susceptibility = 1 - parse_number(levelOfResistance) / 100,
-    effect = map_dbl(file.path(tempdir(), mint_files), function(file) {
+    effects = map(file.path(tempdir(), mint_files), function(file) {
       table <- readRDS(file)
       none <- filter(table, intervention == "none")
       nets <- filter(table, intervention == "llin", near(netUse, 0.6))
       stopifnot(nrow(none) == 1, nrow(nets) == 1)
-      mean(qlogis(mint_prevalence(none)) - qlogis(mint_prevalence(nets)))
+      tibble(effect = mean(qlogis(mint_prevalence(none)) -
+                             qlogis(mint_prevalence(nets))),
+             effect_cases = none$meanCases - nets$meanCases)
     })
   ) %>%
+  unnest(effects) %>%
   group_by(currentPrevalence, bitingPeople, bitingIndoors,
            seasonalityOfTransmission) %>%
   mutate(effectiveness = effect / effect[susceptibility == 1],
+         effectiveness_cases = effect_cases /
+           effect_cases[susceptibility == 1],
          setting = cur_group_id()) %>%
   ungroup()
 mint_effectiveness <- mint_settings %>%
   group_by(susceptibility) %>%
   summarise(effectiveness = median(effectiveness))
+mint_effectiveness_cases <- mint_settings %>%
+  group_by(susceptibility) %>%
+  summarise(effectiveness = median(effectiveness_cases))
 
 # Symons et al.: the nets' contribution to the log-odds of prevalence is
 #   f(ITN) (beta_0 + beta_1 (1 - k))
@@ -117,10 +126,12 @@ mint_effectiveness <- mint_settings %>%
 #             (above): linear, 1 - 0.46 (1 - k)
 #   churcher  Churcher et al. 2024's MINT simulations, above, interpolated
 #             linearly between the simulated k
+#   churcher_cases  the same, on clinical cases
 effectiveness_points <- list(
   symons = tibble(susceptibility = c(0, 1),
                   effectiveness = 1 - 0.46 * (1 - c(0, 1))),
-  churcher = mint_effectiveness
+  churcher = mint_effectiveness,
+  churcher_cases = mint_effectiveness_cases
 )
 effectiveness_models <- lapply(effectiveness_points, function(points) {
   approxfun(x = points$susceptibility, y = points$effectiveness)
