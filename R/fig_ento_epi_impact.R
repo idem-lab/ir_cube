@@ -164,13 +164,14 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 #                  sum of e(k) times their use and the year's population at
 #                  risk weights (panel A); use_weight the sum of the weights
 # and for each cell, its population at risk in 2025, and the posterior mean
-# of its 2025 susceptibility and the posterior probability that it is above
-# each break-even susceptibility k* (break_even, one per effectiveness model;
-# panel C). The cells are processed in forked workers (IR_CUBE_MAP_WORKERS;
+# of its 2025 susceptibility and its sorted draws at the ranks that classify
+# it at posterior probability 0.9, 0.95 or 0.975 against any break-even
+# susceptibility k* (panel C; better_buy_class()), so that a change in k*
+# needs no rerun. The cells are processed in forked workers (IR_CUBE_MAP_WORKERS;
 # see below), in chunks of chunk_size cells, each holding all the draws of its
 # cells; the results do not depend on either
 compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
-                              effectiveness, break_even, chunk_size = 1250) {
+                              effectiveness, chunk_size = 1250) {
   terraOptions(todisk = TRUE)
   baseline_year <- 1995
   years_all <- baseline_year:max(years_plot)
@@ -237,12 +238,15 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
     x
   }
 
-  # the posterior mean of each cell's 2025 susceptibility, and its posterior
-  # probability of being above each k*, from its draws (draws x cells)
-  exceedance <- function(k_2025) {
-    above <- sapply(break_even, function(k_star) colMeans(k_2025 > k_star))
-    colnames(above) <- paste0("above_", names(break_even))
-    cbind(mean = colMeans(k_2025), above)
+  # the posterior mean of each cell's 2025 susceptibility, and its draws of
+  # these ranks, from its sorted draws (draws x cells)
+  confidence_levels <- c(0.9, 0.95, 0.975)
+  ranks <- round(c(n_draws * (1 - confidence_levels) + 1,
+                   n_draws * confidence_levels))
+  cell_summary <- function(sorted_2025) {
+    out <- cbind(colMeans(sorted_2025), t(sorted_2025[ranks, , drop = FALSE]))
+    colnames(out) <- c("mean", paste0("x", ranks))
+    out
   }
 
   # the sums of a group of cells (rows of the cells above): the draws of all
@@ -283,6 +287,9 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
         k[, , j] <- by_rank(matrix(k[, , j], n_draws),
                             matrix(k_sorted[, , j], n_draws))
       }
+      stats[[i]] <- cbind(cell = cells[rows], people_2025 = people_2025[rows],
+                          cell_summary(matrix(k_sorted[, , index_2025],
+                                              n_draws)))
       rm(k_sorted)
       # check: these are the map's draws (their means)
       stopifnot(max(abs(colMeans(k[, , index_2025]) - map_2025[rows])) <
@@ -298,8 +305,6 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
             e %*% weight_use[rows, j]
         }
       }
-      stats[[i]] <- cbind(cell = cells[rows], people_2025 = people_2025[rows],
-                          exceedance(k[, , index_2025]))
       rm(k, chunk)
       if (i %% 5 == 0) {
         message(format(Sys.time(), "%H:%M:%S"), " cells ", min(group), "-",
@@ -312,8 +317,8 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
 
   # Forked workers deadlocked on the Linux box (each waiting on a lock held
   # at the fork), so this ran in one process (IR_CUBE_MAP_WORKERS = 1): 3 h 15
-  # min with OpenBLAS (8 threads), 21 GB at peak, before the sorting. At 4 workers, memory also ran
-  # short: each added a few GB to the parent's ~11 GB
+  # min with OpenBLAS (8 threads), 21 GB at peak, before the sorting. At 4
+  # workers, memory also ran short: each added a few GB to the parent's ~11 GB
   invisible(gc())
   n_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
   message(format(Sys.time(), "%H:%M:%S"), " drawing ", length(cells),
@@ -339,6 +344,7 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
     effectiveness = add("effectiveness"),
     coverage = add("coverage"),
     use_weight = colSums(weight_use),
+    n_draws = n_draws,
     cells = as_tibble(do.call(rbind, lapply(done, `[[`, "stats")))
   )
 }
@@ -367,8 +373,7 @@ draws <- cached_figure_data(
   "temporary/fig_ento_epi_impact_draws.rds", compute_epi_draws,
   args = list(years_plot = years_plot, net_type_files = net_type_files,
               llin_weights = llin_weights,
-              effectiveness = effectiveness_points,
-              break_even = break_even_susceptibility),
+              effectiveness = effectiveness_points),
   sources = c("R/packages.R", "R/functions.R", "R/model_covariates.R",
               "R/bioassay_subset.R", "R/two_stage_predictions.R"),
   inputs = c(ir_map_files("llin_effective", years_plot), net_type_files,
@@ -413,15 +418,19 @@ panel_data <- lapply(setNames(nm = names(effectiveness_models)), function(model)
 # panel C: the classes of 2025 susceptibility by the posterior probability p
 # that pyrethroid-only nets are the better buy (susceptibility above the
 # model's k*): pyrethroid-only where p is at least `confidence`, dual-AI where
-# it is at most 1 - confidence (tested as 1 - p >= confidence: 1 - 0.9 is
-# just below 0.1 in floating point), uncertain between. Symons et al.'s for
-# panel C, Churcher et al.'s for the supplement. The map, and the numbers for
+# 1 - p is, uncertain between. Symons et al.'s for panel C, Churcher et al.'s
+# for the supplement. Of n sorted draws, p >= confidence where draw
+# n (1 - confidence) + 1 is above k*, and 1 - p >= confidence where draw
+# n confidence is not (compute_epi_draws()). The map, and the numbers for
 # the text, are within the limits of transmission (in_limits)
 confidence <- 0.9
 class_names <- c("pyrethroid", "uncertain", "dual_ai")
-better_buy_class <- function(model) {
-  p <- draws$cells[[paste0("above_", model)]]
-  if_else(p >= confidence, 1, if_else(1 - p >= confidence, 3, 2))
+better_buy_class <- function(model,
+                             k_star = break_even_susceptibility[[model]]) {
+  draw <- function(rank) draws$cells[[paste0("x", round(rank))]]
+  low <- draw(draws$n_draws * (1 - confidence) + 1)
+  high <- draw(draws$n_draws * confidence)
+  if_else(low > k_star, 1, if_else(high <= k_star, 3, 2))
 }
 limits_mask <- rast("data/clean/pfpr_water_mask.tif")
 in_limits <- !is.na(terra::values(limits_mask, mat = FALSE)[draws$cells$cell])
