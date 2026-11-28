@@ -35,7 +35,8 @@
 # B is projected to 2030 from the two-stage model's forecasts
 # (compute_epi_impact() also holds net use at its 2025 values after 2025,
 # unplotted). The ribbons are credible intervals of the
-# two-stage posterior (compute_epi_draws()), with Symons et al.'s coefficients
+# two-stage posterior (compute_epi_draws()), the three pyrethroids taken as
+# perfectly correlated, with Symons et al.'s coefficients
 # at their posterior means. The numbers for the text are printed after the
 # panels' data.
 
@@ -148,9 +149,14 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 # The two-stage posterior of llin_effective susceptibility k as the panels
 # weight it. The draws are those `map` of R/two_stage_maps.R summarises: 1000
 # paired draws of each LLIN pyrethroid's two-stage model
-# (R/two_stage_predictions.R), combined draw by draw with the llin_effective
-# weights (llin_weights), at every cell with a population at risk in any year
-# or within the limits of transmission. For each effectiveness model e(k)
+# (R/two_stage_predictions.R), at every cell with a population at risk in any
+# year or within the limits of transmission. They are combined with the
+# llin_effective weights (llin_weights) as perfectly correlated, as the
+# published llin_effective SD map takes them (R/two_stage_maps.R): at each
+# cell and year, draw for draw, the weighted sum of the pyrethroids' draws
+# sorted (comonotone), put in the order of the weighted sum of their draws as
+# drawn, so that each draw keeps that sum's pattern across cells and years.
+# Sorting keeps each cell's posterior mean. For each effectiveness model e(k)
 # (effectiveness: the points of a piecewise linear curve), draw and year:
 #   effectiveness  the mean of e(k) over the population at risk in 2000
 #                  (panel B)
@@ -164,7 +170,7 @@ compute_epi_impact <- function(years_plot, net_type_files) {
 # see below), in chunks of chunk_size cells, each holding all the draws of its
 # cells; the results do not depend on either
 compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
-                              effectiveness, break_even, chunk_size = 2500) {
+                              effectiveness, break_even, chunk_size = 1250) {
   terraOptions(todisk = TRUE)
   baseline_year <- 1995
   years_all <- baseline_year:max(years_plot)
@@ -221,6 +227,16 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
             length(unique(lapply(setups, `[[`, "batches"))) == 1)
   n_draws <- setups[[1]]$n_draws
 
+  # the columns of x, each sorted; and x with each column's values replaced by
+  # those of `sorted`, rank for rank
+  column_sort <- function(x) {
+    matrix(x[order(col(x), x, method = "radix")], nrow(x))
+  }
+  by_rank <- function(x, sorted) {
+    x[order(col(x), x, method = "radix")] <- sorted
+    x
+  }
+
   # the posterior mean of each cell's 2025 susceptibility, and its posterior
   # probability of being above each k*, from its draws (draws x cells)
   exceedance <- function(k_2025) {
@@ -242,20 +258,33 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
     for (i in seq_along(chunks)) {
       rows <- group[chunks[[i]]]
       chunk <- two_stage_chunk(setups[[1]], group_cells, chunks[[i]])
+      # k as drawn, and the weighted sum of the sorted draws
       k <- array(0, c(n_draws, length(rows), length(years_plot)))
-      start <- 0
-      for (b in seq_along(setups[[1]]$batches)) {
-        index <- start + seq_along(setups[[1]]$batches[[b]])
-        for (t in seq_along(setups)) {
+      k_sorted <- k
+      for (t in seq_along(setups)) {
+        k_t <- array(0, dim(k))
+        start <- 0
+        for (b in seq_along(setups[[t]]$batches)) {
+          index <- start + seq_along(setups[[t]]$batches[[b]])
           logit <- two_stage_logit_batch(setups[[t]], b, chunk)$two_stage
           for (j in seq_along(years_plot)) {
-            k[index, , j] <- k[index, , j] +
-              llin_weights[[t]] * plogis(logit[[year_index[j]]])
+            k_t[index, , j] <- plogis(logit[[year_index[j]]])
           }
+          start <- max(index)
         }
-        start <- max(index)
+        k <- k + llin_weights[[t]] * k_t
+        for (j in seq_along(years_plot)) {
+          k_sorted[, , j] <- k_sorted[, , j] + llin_weights[[t]] *
+            column_sort(matrix(k_t[, , j], n_draws))
+        }
+        rm(k_t)
       }
-      # check: these are the map's draws
+      for (j in seq_along(years_plot)) {
+        k[, , j] <- by_rank(matrix(k[, , j], n_draws),
+                            matrix(k_sorted[, , j], n_draws))
+      }
+      rm(k_sorted)
+      # check: these are the map's draws (their means)
       stopifnot(max(abs(colMeans(k[, , index_2025]) - map_2025[rows])) <
                   1e-5)
       for (j in seq_along(years_plot)) {
@@ -283,7 +312,7 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
 
   # Forked workers deadlocked on the Linux box (each waiting on a lock held
   # at the fork), so this ran in one process (IR_CUBE_MAP_WORKERS = 1): 3 h 15
-  # min with OpenBLAS (8 threads), 21 GB at peak. At 4 workers, memory also ran
+  # min with OpenBLAS (8 threads), 21 GB at peak, before the sorting. At 4 workers, memory also ran
   # short: each added a few GB to the parent's ~11 GB
   invisible(gc())
   n_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
