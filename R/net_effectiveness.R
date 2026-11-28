@@ -99,58 +99,15 @@ mint_effectiveness <- mint_settings %>%
   group_by(susceptibility) %>%
   summarise(effectiveness = median(effectiveness))
 
-# Encode Symons et al. PMI function for relative effectiveness of ITNs at
-# reducing logit-PfPR (reduction in on the log-odds ratio), compared to in the absence
-# of resistance.
-
-# when susceptibility is 100%, the ITN effectiveness parameter has full effect
-# (multiplier 1), when susceptibility is 0%, the ITN effectiveness parameter has
-# 54% (multiplier 0.54).
-
-# The log-odds ratio for malaria infection under full ITN coverage (relative to
-# no ITN coverage) is -1.68, which corresponds to an odds ratio of 0.186374.
-# With a fully-resistant vector population, this is would reduce to 54% of its
-# previous value, -0.9072, giving an odds ratio of 0.4036529.
-
-# Alternative interpretation: the odds ratio for a population with 100% coverage
-# and 100% resistance is equivalent to that of a population with 54% coverage
-# and 0% resistance.
-
-# the posteriors of the parameters behind this model:
-
-# beta_0 = beta_{physical} = 'ITN_physical'
-#   beta_0 ~ N(-1.68, 0.11^2)
-# beta_1 = beta_{penalty} = 'ITN_insecticidal_penalty'
-#   beta_1 ~ N(0.78, 0.12^2)
-
-# the log odds (contribution to the linear predictor) is computed from these
-# parameters, with a non-linear function of ITN coverage f(ITN) and
-# susceptibility k:
-
-#   log_odds = beta_0 * f(ITN) + beta_1 * (1 - k) * f(ITN)
-#            = f(ITN) * (beta_0 + beta_1 * (1 - k))
-
-# we can therefore factorise to get a net effectiveness measure g(k):
-#   log_odds = f(ITN) * g(k)
-#   g(k) = beta_0 + beta_1 * (1 - k)
-
-# from which we can obtain a *relative* net effectiveness, giving the
-# effectiveness relative to a fully susceptible population (k = 1):
-#   g*(k) = g(k) / g(1)
-
-# since:
-#   g(1) = beta_0 + beta_1 * (1 - k)
-#        = beta_0 + beta_1 * 0
-#        = beta_0
-# we have:
-#   g*(k) = g(k) / beta_0
-#         = (beta_0 + beta_1 * (1 - k)) / beta_0
-#         = 1 + (beta_1 * (1 - k)) / beta_0
-
-# which is used at the posterior means, r = beta_1 / beta_0 = -0.46. The
-# uncertainty shown is that of the susceptibility maps (compute_epi_draws()).
-# g*(k) is linear in k, so the effectiveness at a weighted mean of k is the
-# weighted mean of the effectiveness
+# Symons et al.: the nets' contribution to the log-odds of prevalence is
+#   f(ITN) (beta_0 + beta_1 (1 - k))
+# with f(ITN) a function of net coverage, and the posterior means
+# beta_0 = -1.68 ('ITN_physical') and beta_1 = 0.78
+# ('ITN_insecticidal_penalty'). Relative to a fully susceptible population
+# (k = 1), the effectiveness is
+#   e(k) = 1 + beta_1 / beta_0 (1 - k) = 1 - 0.46 (1 - k),
+# 0.54 at k = 0: Symons et al.'s 54%, so the ratio is rounded (0.78 / 1.68 is
+# 0.464). The coefficients are used as point estimates
 
 # Two models of the relative effectiveness e(k) of a pyrethroid-only net, as a
 # function of susceptibility k (bioassay mortality), 1 at k = 1, both the

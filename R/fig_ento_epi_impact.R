@@ -54,19 +54,6 @@ source("R/net_effectiveness.R")
 # The panels' data are cached in temporary/fig_ento_epi_impact.rds
 # (R/figure_cache.R), so changes to the plots alone rerun in seconds
 
-# data to load:
-
-# spatial:
-# - Country borders for plotting
-# - pf transmission limits and water mask for plotting
-# - IR layers
-# - MAP net use by type (to manually project to 2030)
-# - MAP PR 2000 baseline
-# - MAP populations by year (projected to 2030)
-# other:
-# - Symons epi impact estimate
-# - net prices and delivery costs (data/raw/costs/net_costs.csv)
-
 # years to plot for
 years_plot <- 2000:2030
 
@@ -296,7 +283,7 @@ compute_epi_draws <- function(years_plot, net_type_files, llin_weights,
 
   # Forked workers deadlocked on the Linux box (each waiting on a lock held
   # at the fork), so this ran in one process (IR_CUBE_MAP_WORKERS = 1): 3 h 15
-  # min with OpenBLAS (8 threads), 22 GB at peak. At 4 workers, memory also ran
+  # min with OpenBLAS (8 threads), 21 GB at peak. At 4 workers, memory also ran
   # short: each added a few GB to the parent's ~11 GB
   invisible(gc())
   n_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
@@ -387,8 +374,7 @@ panel_data <- lapply(setNames(nm = names(effectiveness_models)), function(model)
     a = epi$coverage %>%
       mutate(
         pyrethroid = colMeans(coverage_pyrethroid),
-        mean = pyrethroid + pbo + dual_ai,
-        mean_no_ir = no_ir
+        mean = pyrethroid + pbo + dual_ai
       ) %>%
       bind_cols(select(posterior_summary(coverage_total), lower, upper)),
     b = posterior_summary(draws$effectiveness[[model]])
@@ -398,20 +384,23 @@ panel_data <- lapply(setNames(nm = names(effectiveness_models)), function(model)
 # panel C: the classes of 2025 susceptibility by the posterior probability p
 # that pyrethroid-only nets are the better buy (susceptibility above the
 # model's k*): pyrethroid-only where p is at least `confidence`, dual-AI where
-# it is at most 1 - confidence, uncertain between; within the limits of
-# transmission. Symons et al.'s for panel C, Churcher et al.'s for the
-# supplement
+# it is at most 1 - confidence (tested as 1 - p >= confidence: 1 - 0.9 is
+# just below 0.1 in floating point), uncertain between. Symons et al.'s for
+# panel C, Churcher et al.'s for the supplement. The map, and the numbers for
+# the text, are within the limits of transmission (in_limits)
 confidence <- 0.9
 class_names <- c("pyrethroid", "uncertain", "dual_ai")
 better_buy_class <- function(model) {
   p <- draws$cells[[paste0("above_", model)]]
-  if_else(p >= confidence, 1, if_else(p <= 1 - confidence, 3, 2))
+  if_else(p >= confidence, 1, if_else(1 - p >= confidence, 3, 2))
 }
+limits_mask <- rast("data/clean/pfpr_water_mask.tif")
+in_limits <- !is.na(terra::values(limits_mask, mat = FALSE)[draws$cells$cell])
 better_buy_map <- function(model) {
   classes <- rast(rast("data/clean/raster_mask.tif"))
   classes[draws$cells$cell] <- better_buy_class(model)
   levels(classes) <- data.frame(id = 1:3, band = class_names)
-  terra::mask(classes, rast("data/clean/pfpr_water_mask.tif"))
+  terra::mask(classes, limits_mask)
 }
 
 
@@ -428,7 +417,7 @@ for (model in names(panel_data)) {
                      " interval]):\n"), model, 100 * interval))
   panel_data[[model]]$a %>%
     filter(year %in% c(2017, 2024)) %>%
-    mutate(lost = mean_no_ir - mean) %>%
+    mutate(lost = no_ir - mean) %>%
     rowwise() %>%
     mutate(
       text = paste0(
@@ -436,12 +425,11 @@ for (model in names(panel_data)) {
         ", PBO ", sprintf("%.1f", 100 * pbo),
         ", dual-AI ", sprintf("%.1f", 100 * dual_ai),
         "\n  total ", with_interval(mean, lower, upper),
-        "\n  no resistance ", sprintf("%.1f", 100 * mean_no_ir),
+        "\n  no resistance ", sprintf("%.1f", 100 * no_ir),
         "\n  lost to resistance (percentage points) ",
-        with_interval(lost, mean_no_ir - upper, mean_no_ir - lower),
+        with_interval(lost, no_ir - upper, no_ir - lower),
         "\n  lost to resistance (% of no resistance) ",
-        with_interval(lost / mean_no_ir, 1 - upper / mean_no_ir,
-                      1 - lower / mean_no_ir)
+        with_interval(lost / no_ir, 1 - upper / no_ir, 1 - lower / no_ir)
       )
     ) %>%
     pull(text) %>%
@@ -475,12 +463,13 @@ cat("\nBreak-even susceptibility k* (bioassay mortality, %), where e(k*) =",
 cat(sprintf("%s: %.1f", names(break_even_susceptibility),
             100 * break_even_susceptibility), sep = "\n")
 
-# the classes' shares of the population at risk in 2025, under each model
+# the classes' shares of the population at risk in 2025 within the limits of
+# transmission, under each model
 class_shares <- map_dfr(names(effectiveness_models), function(model) {
   tibble(model = model,
          class = factor(class_names[better_buy_class(model)],
                         levels = class_names),
-         people = draws$cells$people_2025)
+         people = draws$cells$people_2025)[in_limits, ]
 }) %>%
   group_by(model, class) %>%
   summarise(people = sum(people), .groups = "drop_last") %>%
@@ -488,7 +477,8 @@ class_shares <- map_dfr(names(effectiveness_models), function(model) {
   ungroup()
 
 cat(sprintf(paste0("\nClasses of panel C, at posterior probability %.2f",
-                   " (share: %% of the population at risk in 2025):\n"),
+                   " (share: %% of the population at risk in 2025, within",
+                   " the limits of transmission):\n"),
             confidence))
 class_shares %>%
   mutate(text = sprintf("%s, %s: share %.1f", model, class, 100 * share)) %>%
@@ -502,7 +492,7 @@ class_shares %>%
 # that at their mean effectiveness, here at each cell's posterior mean
 # susceptibility
 gain <- vapply(names(effectiveness_models), function(model) {
-  better <- better_buy_class(model) == 1
+  better <- better_buy_class(model) == 1 & in_limits
   effectiveness <- weighted.mean(
     effectiveness_models[[model]](draws$cells$mean[better]),
     draws$cells$people_2025[better]
@@ -519,15 +509,8 @@ effectiveness_panel <- function(model) {
 
   # split into past and future, both including the latest year of data so there is
   # no break in lines or ribbons
-  panel_b_data_past <- panel_b_data %>%
-    filter(
-      year <= latest_nets
-    )
-
-  panel_b_data_future <- panel_b_data %>%
-    filter(
-      year >= latest_nets
-    )
+  panel_b_data_past <- filter(panel_b_data, year <= latest_nets)
+  panel_b_data_future <- filter(panel_b_data, year >= latest_nets)
 
   panel_b <- ggplot(
     mapping = aes(
@@ -539,8 +522,11 @@ effectiveness_panel <- function(model) {
   ) +
     scale_y_continuous(
       labels = scales::percent,
-      limits = c(0.6, 1),
       name = "LLIN effectiveness"
+    ) +
+    # zoomed, without dropping the ribbon where it goes outside
+    coord_cartesian(
+      ylim = c(0.6, 1)
     ) +
     # vertical dividing line for past and future, light grey and solid,
     # unlike the break-even line
@@ -555,9 +541,8 @@ effectiveness_panel <- function(model) {
     ) +
     geom_line(
       data = panel_b_data_past,
-      colour = grey(0.2),
-      # linewidth = 0.8
-    ) + 
+      colour = grey(0.2)
+    ) +
     # future projections, at half the alpha; the line solid, as dotted lines
     # are counterfactuals
     geom_ribbon(
@@ -568,9 +553,8 @@ effectiveness_panel <- function(model) {
     geom_line(
       data = panel_b_data_future,
       colour = grey(0.2),
-      alpha = 0.5,
-      # linewidth = 0.8
-    ) + 
+      alpha = 0.5
+    ) +
     # the break-even effectiveness e*(D) at the mean delivery cost: above it,
     # pyrethroid-only nets give more effective coverage than dual-AI nets for
     # the same budget
@@ -648,10 +632,7 @@ coverage_panel <- function(model) {
 
   panel_a <- ggplot(
     mapping = aes(
-      x = year,
-      y = mean,
-      ymin = lower,
-      ymax = upper
+      x = year
     )
   ) +
     scale_x_continuous(
@@ -672,7 +653,6 @@ coverage_panel <- function(model) {
     geom_ribbon(
       data = panel_a_stack,
       aes(
-        y = NULL,
         ymin = bottom,
         ymax = top,
         fill = type
@@ -685,8 +665,6 @@ coverage_panel <- function(model) {
       data = filter(panel_a_stack, type != "pyrethroid", top > 0),
       aes(
         y = top,
-        ymin = NULL,
-        ymax = NULL,
         group = type,
         colour = "No resistance"
       ),
@@ -695,7 +673,7 @@ coverage_panel <- function(model) {
     geom_line(
       data = panel_a_data,
       aes(
-        y = mean_no_ir,
+        y = no_ir,
         colour = "No resistance"
       ),
       linetype = 3
@@ -745,9 +723,8 @@ uncertain_col <- colorRampPalette(
 band_cols <- c(pyrethroid = pyrethroid_col,
                uncertain = uncertain_col,
                dual_ai = dual_ai_col)
-band_labels <- c(pyrethroid = "Pyrethroid-only",
-                 uncertain = "Uncertain",
-                 dual_ai = "Dual-AI")
+band_labels <- c(net_type_labels["pyrethroid"], uncertain = "Uncertain",
+                 net_type_labels["dual_ai"])
 
 better_buy_panel <- function(model) {
   ggplot() +
@@ -764,7 +741,7 @@ better_buy_panel <- function(model) {
       labels = band_labels,
       breaks = names(band_cols),
       na.translate = FALSE,
-      # note we arre using element_markdown() for legend titles so need this
+      # note we are using element_markdown() for legend titles so need this
       # html linebreak version
       name = "Most cost-effective<br>(2025)",
       na.value = "transparent"
@@ -804,258 +781,18 @@ epi_impact_figure <- function(model) {
     )
 }
 
+# Symons et al.'s for the paper, Churcher et al. 2024's for the supplement;
 # drawn at three quarters of the size, so the text is larger
-ggsave(
-  filename = "figures/epi_impact.png",
-  plot = epi_impact_figure("symons"),
-  bg = "white",
-  width = 7,
-  height = 9.7,
-  scale = 0.75,
-  dpi = 400
-)
-
-# the supplement's version, under the effectiveness model of Churcher et al.
-# 2024
-ggsave(
-  filename = "figures/epi_impact_churcher.png",
-  plot = epi_impact_figure("churcher"),
-  bg = "white",
-  width = 7,
-  height = 9.7,
-  scale = 0.75,
-  dpi = 400
-)
-
-
-# # maybe plot the killing effects from Nash & Sherrard-Smith
-# 
-# # - Nash/Sherrard-Smith killing effect estimates.
-# 
-# # load in and prepare curves from Nash/Sherard-Smith, given in supp to Sherard
-# # Smith paper: https://doi.org/10.1038/s41467-022-30700-1
-# ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
-#                      sheet = 4,
-#                      range = "A15:Y117") %>%
-#   # get required columns
-#   select(
-#     resistance = "Pyrethroid resistance approximated from susceptibility bioassay",
-#     kill_logistic = "dN0_1",  # logistic model
-#     kill_log_logistic = "dN0_4" # log-logistic model
-#   ) %>%
-#   # remove empty row
-#   slice(
-#     -1
-#   ) %>%
-#   # split apart by model type
-#   pivot_longer(
-#     cols = starts_with("kill"),
-#     names_to = "model",
-#     values_to = "kill",
-#     names_prefix = "kill_"
-#   ) %>%
-#   group_by(
-#     model
-#   ) %>%
-#   mutate(
-#     susceptibility = 1 - resistance,
-#     relative_killing_effect = kill / max(kill)
-#   )
-# 
-# # # plot to check against paper figures
-# # ss_est %>%
-# #   ggplot(
-# #     aes(
-# #       x = resistance,
-# #       y = kill
-# #     )
-# #   ) +
-# #   facet_wrap(~model) +
-# #   geom_line() +
-# #   coord_cartesian(ylim = c(0, 1)) +
-# #   theme_minimal()
-# 
-# ss_est_logistic <- ss_est %>%
-#   filter(model == "logistic")
-# 
-# ss_est_log_logistic <- ss_est %>%
-#   filter(model == "log_logistic")
-# 
-# # produce interpolating functions to get the relative killing effect
-# killing_function_logistic <- splinefun(
-#   x = ss_est_logistic$susceptibility,
-#   y = ss_est_logistic$relative_killing_effect
-# )
-# 
-# killing_function_log_logistic <- splinefun(
-#   x = ss_est_log_logistic$susceptibility,
-#   y = ss_est_log_logistic$relative_killing_effect
-# )
-# 
-# # check the interpolators behave appropriately
-# stopifnot(
-#   identical(
-#     killing_function_logistic(ss_est_logistic$susceptibility),
-#     ss_est_logistic$relative_killing_effect
-#   )
-# )
-# 
-# stopifnot(
-#   identical(
-#     killing_function_log_logistic(ss_est_log_logistic$susceptibility),
-#     ss_est_log_logistic$relative_killing_effect
-#   )
-# )
-# 
-# 
-# # make a cube of the killing effect of ITNs, over time and space
-# relative_killing_logistic <- terra::app(ir, killing_function_logistic)
-# names(relative_killing_logistic) <- names(ir)
-# 
-# relative_killing_log_logistic <- terra::app(ir, killing_function_log_logistic)
-# names(relative_killing_log_logistic) <- names(ir)
-# 
-# 
-# # average the killing effect and epi impact of nets over the nets in use
-# average_killing_logistic <- global(
-#   x = relative_killing_logistic * net_weights,
-#   fun = "sum",
-#   na.rm = TRUE
-# )
-# 
-# average_killing_log_logistic <- global(
-#   x = relative_killing_log_logistic * net_weights,
-#   fun = "sum",
-#   na.rm = TRUE
-# )
-# 
-# # apply the impact of IR and recalculate average
-# net_impact_killing_logistic <- global(
-#   x = nets * relative_killing_logistic * infection_weights,
-#   fun = "sum",
-#   na.rm = TRUE
-# )
-# 
-# net_impact_killing_log_logistic <- global(
-#   x = nets * relative_killing_log_logistic * infection_weights,
-#   fun = "sum",
-#   na.rm = TRUE
-# )
-# 
-# 
-# par(mfrow = c(1, 2),
-#     mar = c(2, 5, 3, 2))
-# 
-# # Effectiveness\n of single-AI nets
-# no_change <- rep(1, length(years_plot))
-# # impact of each net
-# plot(no_change ~ years_plot,
-#      type = "l",
-#      col = grey(0.3),
-#      lwd = 2,
-#      xlab = "",
-#      ylab = "Relative effectiveness",
-#      ylim = c(0, 1))
-# lines(average_killing_logistic$sum ~ years_plot,
-#       col = "red",
-#       lwd = 2)
-# lines(average_killing_log_logistic$sum ~ years_plot,
-#       col = "red",
-#       lty = 2,
-#       lwd = 2)
-# lines(average_epi_impact$sum ~ years_plot,
-#       col = "blue",
-#       lwd = 2)
-# abline(v = latest_nets, lty = 2)
-# # directly label these
-# 
-# plot(net_impact_no_ir$sum ~ years_plot,
-#      type = "l",
-#      lwd = 2,
-#      col = grey(0.3),
-#      ylab = "Relative impact",
-#      xlab = "",
-#      ylim = c(0, 1))
-# lines(net_impact_epi_impact$sum ~ years_plot,
-#       col = "blue",
-#       lwd = 2)
-# abline(v = latest_nets, lty = 2)
-# title(main = "Impact of\nnet distribution")
-# 
-# df_plot <- tibble(
-#   year = years_plot,
-#   `impact_direct/no resistance` = 1,
-#   `impact_direct/vector killing (logistic)` = average_killing_logistic$sum,
-#   `impact_direct/vector killing (log-logistic)` = average_killing_log_logistic$sum,
-#   `impact_direct/transmission reduction` = average_epi_impact$sum,
-#   `impact_overall/no resistance` = net_impact_no_ir$sum,
-#   `impact_overall/transmission reduction` = net_impact_epi_impact$sum
-# ) %>%
-#   pivot_longer(
-#     cols = starts_with("impact"),
-#     names_to = c("scale", "impact_type"),
-#     names_pattern = "impact_(.*)/(.*)",
-#     values_to = "impact",
-#     # names_prefix = "impact_"
-#   )
-# 
-# plot_direct <- df_plot %>%
-#   filter(
-#     scale == "direct"
-#   ) %>%
-#   mutate(
-#     phase = case_when(
-#       year > latest_nets ~ "future",
-#       .default = "past"
-#     )
-#   ) %>%
-#   ggplot(
-#     aes(
-#       x = year,
-#       y = impact,
-#       colour = impact_type,
-#       linetype = phase
-#     )
-#   ) +
-#   geom_vline(
-#     aes(
-#       xintercept = latest_nets
-#     ),
-#     col = grey(0.6),
-#     linetype = 2
-#   ) +
-#   geom_line(
-#     linewidth = 0.8
-#   ) +
-#   scale_y_continuous(
-#     labels = scales::percent,
-#     limits = c(0, 1)
-#   ) +
-#   scale_colour_manual(
-#     values = c(
-#       "transmission reduction" = "blue",
-#       "vector killing (log-logistic)" = "coral",
-#       "vector killing (logistic)" = "coral3",
-#       "no resistance" = grey(0.4)
-#     )
-#   ) +
-#   scale_linetype_manual(
-#     values = c(
-#       "past" = 1,
-#       "future" = 3
-#     ),
-#     guide = "none"
-#   ) +
-#   ylab(
-#     "Effectiveness"
-#   ) +
-#   xlab(
-#     ""
-#   ) +
-#   theme_minimal() +
-#   theme(
-#     legend.title = element_blank(),
-#     # legend.position = "bottom"
-#   )
-# 
-# plot_direct
+figure_files <- c(symons = "figures/epi_impact.png",
+                  churcher = "figures/epi_impact_churcher.png")
+for (model in names(figure_files)) {
+  ggsave(
+    filename = figure_files[[model]],
+    plot = epi_impact_figure(model),
+    bg = "white",
+    width = 7,
+    height = 9.7,
+    scale = 0.75,
+    dpi = 400
+  )
+}
